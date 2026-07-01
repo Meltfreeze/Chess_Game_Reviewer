@@ -11,6 +11,15 @@ import base64
 import math
 from google import genai
 
+VALUES = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+    chess.KING: 100,  # never the "profitable" piece — only ever spent last
+}
+
 # --- HELPER FUNCTIONS ---
 def get_icon_html(classification):
     icon_path = f"icons/{classification}.png"
@@ -33,51 +42,84 @@ def cp_to_wp(cp):
     # Standard Elo-style sigmoid curve to calculate Win Probability (0.0 to 1.0)
     return 1 / (1 + 10 ** (-cp / 400))
 
+def _least_valuable_attacker(board, square, color):
+    """
+    Square of the cheapest `color` piece that can legally recapture on `square`,
+    or None if there isn't one.
+    """
+    attackers = board.attackers(color, square)
+    if not attackers:
+        return None
+
+    for sq in sorted(attackers, key=lambda s: VALUES.get(board.piece_at(s).piece_type, 0)):
+        if board.piece_at(sq).piece_type == chess.KING:
+            # the king can't recapture into a square the opponent still covers —
+            # that would just be moving into check
+            if board.attackers(not color, square):
+                continue
+        return sq
+    return None
+
+def static_exchange_eval(board, move):
+    """
+    Plays out the entire forced capture sequence on move.to_square — cheapest
+    attacker recaptures each time — then unwinds it so each side only "takes"
+    when doing so doesn't lose them more than walking away would.
+
+    Returns the net material swing for the side making `move`.
+    Negative      -> the mover ends up worse off overall: a genuine sacrifice.
+    Zero/positive -> the mover is fine, even if several pieces get traded on the square.
+    """
+    to_sq, from_sq = move.to_square, move.from_square
+
+    mover = board.piece_at(from_sq)
+    if mover is None:
+        return 0
+
+    scratch = board.copy(stack=False)  # never touch the real board/move stack
+
+    captured = scratch.piece_at(to_sq)
+    gain = [VALUES.get(captured.piece_type, 0) if captured else 0]
+
+    attacker_value = VALUES.get(mover.piece_type, 0)
+    side = not mover.color  # opponent gets first crack at recapturing
+
+    scratch.remove_piece_at(from_sq)
+    scratch.set_piece_at(to_sq, chess.Piece(mover.piece_type, mover.color))
+
+    depth = 0
+    while True:
+        attacker_sq = _least_valuable_attacker(scratch, to_sq, side)
+        if attacker_sq is None:
+            break
+
+        depth += 1
+        gain.append(attacker_value - gain[depth - 1])
+
+        attacker_piece = scratch.piece_at(attacker_sq)
+        attacker_value = VALUES.get(attacker_piece.piece_type, 0)
+
+        scratch.remove_piece_at(attacker_sq)
+        scratch.set_piece_at(to_sq, chess.Piece(attacker_piece.piece_type, attacker_piece.color))
+        side = not side
+
+    # negamax unwind: each side only continues the trade if it's not a losing line for them
+    while depth:
+        gain[depth - 1] = -max(-gain[depth - 1], gain[depth])
+        depth -= 1
+
+    return gain[0]
+
 def is_sacrifice(board, move):
-    """
-    Heuristic to check if a move is a sacrifice.
-    Checks if a piece is trading down into a defended piece, 
-    or moving to an empty square controlled by a lesser piece.
-    """
-    moving_piece = board.piece_at(move.from_square)
-    if not moving_piece: 
+    """True if the full exchange on move.to_square leaves the mover down material."""
+    if not board.piece_at(move.from_square):
         return False
-        
-    values = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 100}
-    moving_val = values.get(moving_piece.piece_type, 0)
-    
-    # Get all enemy pieces attacking the destination square
-    opponent_attackers = board.attackers(not board.turn, move.to_square)
-    
-    # Fix: If the square is completely safe, we aren't sacrificing anything!
-    # (This prevents free captures from being labeled as Brilliant)
-    if not opponent_attackers:
+
+    # fast path: nothing even attacks the destination, so it can't be a sac
+    if not board.attackers(not board.turn, move.to_square):
         return False
-        
-    # 1. Capture Sacrifice (e.g., Queen takes a DEFENDED Knight)
-    captured_piece = board.piece_at(move.to_square)
-    if captured_piece:
-        captured_val = values.get(captured_piece.piece_type, 0)
-        # We are trading a higher value piece for a lower value piece, AND they can recapture it
-        if moving_val > captured_val:
-            return True
-            
-    # 2. Non-Capture Hanging Piece (e.g., moving a Knight to an empty square controlled by a Pawn)
-    else:
-        # Find the lowest value attacker
-        min_attacker_val = 100
-        for attacker_sq in opponent_attackers:
-            attacker_piece = board.piece_at(attacker_sq)
-            if attacker_piece:
-                val = values.get(attacker_piece.piece_type, 0)
-                if val < min_attacker_val:
-                    min_attacker_val = val
-        
-        # If they can take our piece with a strictly lesser piece, it's a sacrifice
-        if moving_val > min_attacker_val:
-            return True
-            
-    return False
+
+    return static_exchange_eval(board, move) < 0
 
 def classify_move(move_number, prev_cp, curr_cp, is_only_move, is_sac):
     wp_before = cp_to_wp(prev_cp)
@@ -87,7 +129,7 @@ def classify_move(move_number, prev_cp, curr_cp, is_only_move, is_sac):
     # --- BAD MOVES ---
     if wp_loss >= 0.25:
         return "Blunder"
-    elif wp_loss >= 0.20:
+    elif wp_loss >= 0.17:
         return "Mistake"
     elif wp_loss >= 0.10:
         return "Inaccuracy"
@@ -101,11 +143,11 @@ def classify_move(move_number, prev_cp, curr_cp, is_only_move, is_sac):
         # To be brilliant or great, the move must be fundamentally sound (Best)
         
         # BRILLIANT: It's a sacrifice, and Win Probability did NOT decrease significantly
-        if is_sac and wp_loss <= 0.02 and wp_after > 0.20:
+        if is_sac and wp_loss <= 0.01 and wp_after > 0.20:
             return "Brilliant"
             
         # GREAT: It was the only move that didn't ruin the position
-        elif is_only_move and wp_after > 0.25:
+        elif is_only_move and wp_after > 0.10:
             return "Great"
             
         else:
