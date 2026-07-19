@@ -17,8 +17,80 @@ VALUES = {
     chess.BISHOP: 3,
     chess.ROOK: 5,
     chess.QUEEN: 9,
-    chess.KING: 100,  # never the "profitable" piece — only ever spent last
+    chess.KING: 100,
 }
+
+BACK_RANK = {chess.WHITE: 7, chess.BLACK: 0}  # 0-indexed ranks
+
+
+def _promoted_type(piece_type, color, square, forced_promotion=None):
+    """
+    A pawn landing on the back rank must promote, which changes what it's
+    worth if it then gets captured. `forced_promotion` lets the caller supply
+    an explicit choice (used for the actual move being evaluated); otherwise
+    we assume queen, since that's the materially-best choice and this is a
+    material-only evaluation.
+    """
+    if piece_type == chess.PAWN and chess.square_rank(square) == BACK_RANK[color]:
+        return forced_promotion or chess.QUEEN
+    return piece_type
+
+
+def static_exchange_eval(board, move):
+    """
+    Plays out the entire forced capture sequence on move.to_square — cheapest
+    legal attacker recaptures each time — then unwinds it so each side only
+    "takes" when doing so doesn't lose them more than walking away would.
+
+    Returns the net material swing for the side making `move`.
+    Negative      -> the mover ends up worse off overall: a genuine sacrifice.
+    Zero/positive -> the mover is fine, even if several pieces get traded on the square.
+    """
+    to_sq, from_sq = move.to_square, move.from_square
+
+    mover = board.piece_at(from_sq)
+    if mover is None:
+        return 0
+
+    scratch = board.copy(stack=False)  # never touch the real board/move stack
+
+    if board.is_en_passant(move):
+        captured_sq = chess.square(chess.square_file(to_sq), chess.square_rank(from_sq))
+        gain = [VALUES[chess.PAWN]]
+        scratch.remove_piece_at(captured_sq)
+    else:
+        captured = scratch.piece_at(to_sq)
+        gain = [VALUES.get(captured.piece_type, 0) if captured else 0]
+
+    mover_type = _promoted_type(mover.piece_type, mover.color, to_sq, move.promotion)
+    attacker_value = VALUES[mover_type]
+    side = not mover.color  # opponent gets first crack at recapturing
+
+    scratch.remove_piece_at(from_sq)
+    scratch.set_piece_at(to_sq, chess.Piece(mover_type, mover.color))
+
+    depth = 0
+    while True:
+        attacker_sq = _least_valuable_attacker(scratch, to_sq, side)
+        if attacker_sq is None:
+            break
+
+        depth += 1
+        gain.append(attacker_value - gain[depth - 1])
+
+        attacker_piece = scratch.piece_at(attacker_sq)
+        attacker_type = _promoted_type(attacker_piece.piece_type, attacker_piece.color, to_sq)
+        attacker_value = VALUES[attacker_type]
+
+        scratch.remove_piece_at(attacker_sq)
+        scratch.set_piece_at(to_sq, chess.Piece(attacker_type, attacker_piece.color))
+        side = not side
+
+    while depth:
+        gain[depth - 1] = -max(-gain[depth - 1], gain[depth])
+        depth -= 1
+
+    return gain[0]
 
 # --- HELPER FUNCTIONS ---
 def get_icon_html(classification):
@@ -45,26 +117,33 @@ def cp_to_wp(cp):
 def _least_valuable_attacker(board, square, color):
     """
     Square of the cheapest `color` piece that can legally recapture on `square`,
-    or None if there isn't one.
+    or None if there isn't one. Excludes pieces that are absolutely pinned in a
+    way that forbids this particular capture, and excludes the king if
+    recapturing would walk it into another attacker's line.
     """
     attackers = board.attackers(color, square)
     if not attackers:
         return None
 
-    for sq in sorted(attackers, key=lambda s: VALUES.get(board.piece_at(s).piece_type, 0)):
-        if board.piece_at(sq).piece_type == chess.KING:
-            # the king can't recapture into a square the opponent still covers —
-            # that would just be moving into check
+    def sort_value(sq):
+        piece = board.piece_at(sq)
+        return VALUES[_promoted_type(piece.piece_type, piece.color, square)]
+
+    for sq in sorted(attackers, key=sort_value):
+        piece = board.piece_at(sq)
+        if piece.piece_type == chess.KING:
             if board.attackers(not color, square):
-                continue
+                continue  # would be moving into check
+        elif square not in board.pin(color, sq):
+            continue  # pinned to its own king along a different line
         return sq
     return None
 
 def static_exchange_eval(board, move):
     """
     Plays out the entire forced capture sequence on move.to_square — cheapest
-    attacker recaptures each time — then unwinds it so each side only "takes"
-    when doing so doesn't lose them more than walking away would.
+    legal attacker recaptures each time — then unwinds it so each side only
+    "takes" when doing so doesn't lose them more than walking away would.
 
     Returns the net material swing for the side making `move`.
     Negative      -> the mover ends up worse off overall: a genuine sacrifice.
@@ -78,14 +157,20 @@ def static_exchange_eval(board, move):
 
     scratch = board.copy(stack=False)  # never touch the real board/move stack
 
-    captured = scratch.piece_at(to_sq)
-    gain = [VALUES.get(captured.piece_type, 0) if captured else 0]
+    if board.is_en_passant(move):
+        captured_sq = chess.square(chess.square_file(to_sq), chess.square_rank(from_sq))
+        gain = [VALUES[chess.PAWN]]
+        scratch.remove_piece_at(captured_sq)
+    else:
+        captured = scratch.piece_at(to_sq)
+        gain = [VALUES.get(captured.piece_type, 0) if captured else 0]
 
-    attacker_value = VALUES.get(mover.piece_type, 0)
+    mover_type = _promoted_type(mover.piece_type, mover.color, to_sq, move.promotion)
+    attacker_value = VALUES[mover_type]
     side = not mover.color  # opponent gets first crack at recapturing
 
     scratch.remove_piece_at(from_sq)
-    scratch.set_piece_at(to_sq, chess.Piece(mover.piece_type, mover.color))
+    scratch.set_piece_at(to_sq, chess.Piece(mover_type, mover.color))
 
     depth = 0
     while True:
@@ -97,13 +182,13 @@ def static_exchange_eval(board, move):
         gain.append(attacker_value - gain[depth - 1])
 
         attacker_piece = scratch.piece_at(attacker_sq)
-        attacker_value = VALUES.get(attacker_piece.piece_type, 0)
+        attacker_type = _promoted_type(attacker_piece.piece_type, attacker_piece.color, to_sq)
+        attacker_value = VALUES[attacker_type]
 
         scratch.remove_piece_at(attacker_sq)
-        scratch.set_piece_at(to_sq, chess.Piece(attacker_piece.piece_type, attacker_piece.color))
+        scratch.set_piece_at(to_sq, chess.Piece(attacker_type, attacker_piece.color))
         side = not side
 
-    # negamax unwind: each side only continues the trade if it's not a losing line for them
     while depth:
         gain[depth - 1] = -max(-gain[depth - 1], gain[depth])
         depth -= 1
@@ -115,7 +200,6 @@ def is_sacrifice(board, move):
     if not board.piece_at(move.from_square):
         return False
 
-    # fast path: nothing even attacks the destination, so it can't be a sac
     if not board.attackers(not board.turn, move.to_square):
         return False
 
@@ -127,9 +211,9 @@ def classify_move(move_number, prev_cp, curr_cp, is_only_move, is_sac):
     wp_loss = wp_before - wp_after
     
     # --- BAD MOVES ---
-    if wp_loss >= 0.25:
+    if wp_loss >= 0.22:
         return "Blunder"
-    elif wp_loss >= 0.17:
+    elif wp_loss >= 0.16:
         return "Mistake"
     elif wp_loss >= 0.10:
         return "Inaccuracy"
