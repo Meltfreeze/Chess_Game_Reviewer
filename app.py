@@ -1,641 +1,424 @@
-import streamlit as st
-import chess
-import chess.pgn
-import chess.engine
-import chess.svg
-import io
-import json
+"""
+app.py — AI Chess Game Reviewer (chess.com-style).
+
+Features:
+  * Verified-fact coaching (engine.py + coach.py) so comments never hallucinate.
+  * chess.com-style green board with clean pieces (board.py + pieces.py).
+  * Step-through review with eval bar, badges, coach bubble and a clickable move list.
+  * A LIVE variation explorer: branch off any position and get real-time Stockfish
+    lines/eval, with zero extra Gemini calls (protects a free-tier key).
+
+Run:  streamlit run app.py
+Needs a Stockfish binary (see get_engine_path) and a GEMINI_API_KEY secret.
+"""
+
 import os
 import platform
-import base64
+import shutil
 import math
-from google import genai
 
-VALUES = {
-    chess.PAWN: 1,
-    chess.KNIGHT: 3,
-    chess.BISHOP: 3,
-    chess.ROOK: 5,
-    chess.QUEEN: 9,
-    chess.KING: 100,
-}
+import chess
+import streamlit as st
 
-BACK_RANK = {chess.WHITE: 7, chess.BLACK: 0}  # 0-indexed ranks
+import engine as eng
+import coach as coach_mod
+from board import render_board, BADGE
 
+# --------------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------------
+st.set_page_config(page_title="AI Chess Reviewer", layout="wide")
 
-def _promoted_type(piece_type, color, square, forced_promotion=None):
-    """
-    A pawn landing on the back rank must promote, which changes what it's
-    worth if it then gets captured. `forced_promotion` lets the caller supply
-    an explicit choice (used for the actual move being evaluated); otherwise
-    we assume queen, since that's the materially-best choice and this is a
-    material-only evaluation.
-    """
-    if piece_type == chess.PAWN and chess.square_rank(square) == BACK_RANK[color]:
-        return forced_promotion or chess.QUEEN
-    return piece_type
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def static_exchange_eval(board, move):
-    """
-    Plays out the entire forced capture sequence on move.to_square — cheapest
-    legal attacker recaptures each time — then unwinds it so each side only
-    "takes" when doing so doesn't lose them more than walking away would.
-
-    Returns the net material swing for the side making `move`.
-    Negative      -> the mover ends up worse off overall: a genuine sacrifice.
-    Zero/positive -> the mover is fine, even if several pieces get traded on the square.
-    """
-    to_sq, from_sq = move.to_square, move.from_square
-
-    mover = board.piece_at(from_sq)
-    if mover is None:
-        return 0
-
-    scratch = board.copy(stack=False)  # never touch the real board/move stack
-
-    if board.is_en_passant(move):
-        captured_sq = chess.square(chess.square_file(to_sq), chess.square_rank(from_sq))
-        gain = [VALUES[chess.PAWN]]
-        scratch.remove_piece_at(captured_sq)
+def get_engine_path():
+    """Local binary in the project folder first, then a system install."""
+    candidates = []
+    if platform.system() == "Windows":
+        candidates += ["stockfish.exe", "stockfishw.exe", "stockfish-windows-x86-64.exe"]
     else:
-        captured = scratch.piece_at(to_sq)
-        gain = [VALUES.get(captured.piece_type, 0) if captured else 0]
+        candidates += ["stockfish", "stockfish-ubuntu-x86-64", "stockfish-linux"]
+    for name in candidates:
+        p = os.path.join(BASE_DIR, name)
+        if os.path.exists(p):
+            if platform.system() != "Windows":
+                try:
+                    os.chmod(p, 0o755)
+                except OSError:
+                    pass
+            return p
+    found = shutil.which("stockfish")          # packages.txt install on Streamlit Cloud
+    return found
 
-    mover_type = _promoted_type(mover.piece_type, mover.color, to_sq, move.promotion)
-    attacker_value = VALUES[mover_type]
-    side = not mover.color  # opponent gets first crack at recapturing
 
-    scratch.remove_piece_at(from_sq)
-    scratch.set_piece_at(to_sq, chess.Piece(mover_type, mover.color))
+ENGINE_PATH = get_engine_path()
 
-    depth = 0
-    while True:
-        attacker_sq = _least_valuable_attacker(scratch, to_sq, side)
-        if attacker_sq is None:
-            break
+def _get_secret(name):
+    try:
+        if name in st.secrets:
+            return st.secrets[name]
+    except Exception:
+        pass
+    return os.environ.get(name)
 
-        depth += 1
-        gain.append(attacker_value - gain[depth - 1])
 
-        attacker_piece = scratch.piece_at(attacker_sq)
-        attacker_type = _promoted_type(attacker_piece.piece_type, attacker_piece.color, to_sq)
-        attacker_value = VALUES[attacker_type]
+API_KEY = _get_secret("GEMINI_API_KEY")
+gemini_client = None
+if API_KEY:
+    try:
+        from google import genai
+        gemini_client = genai.Client(api_key=API_KEY)
+    except Exception as e:
+        st.warning(f"Gemini disabled ({e}). Coaching will use built-in templates.")
 
-        scratch.remove_piece_at(attacker_sq)
-        scratch.set_piece_at(to_sq, chess.Piece(attacker_type, attacker_piece.color))
-        side = not side
+DEPTH = 12          # keep modest: fast + free-tier friendly
 
-    while depth:
-        gain[depth - 1] = -max(-gain[depth - 1], gain[depth])
-        depth -= 1
 
-    return gain[0]
+# --------------------------------------------------------------------------
+# Cached heavy work
+# --------------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def run_full_analysis(pgn_str, depth):
+    return eng.analyze_game(pgn_str, ENGINE_PATH, depth=depth)
 
-# --- HELPER FUNCTIONS ---
-def get_icon_html(classification):
-    icon_path = f"icons/{classification}.png"
-    if os.path.exists(icon_path):
-        with open(icon_path, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode()
-            return f'<img src="data:image/png;base64,{encoded_string}" width="24" style="vertical-align: middle; margin-right: 8px;">'
-    return ""
 
-def format_clock(seconds):
-    if seconds is None:
-        return "--:--"
-    m, s = divmod(int(max(0, seconds)), 60)
-    return f"{m}:{s:02d}"
+@st.cache_data(show_spinner=False)
+def analyse_fen_cached(fen, depth):
+    return eng.analyse_fen(fen, ENGINE_PATH, depth=depth, multipv=3)
 
-# --- NEW: WIN PROBABILITY CLASSIFIER ---
-def cp_to_wp(cp):
-    # Cap the CP to prevent math overflow errors on massive mate scores
-    cp = max(-10000, min(10000, cp))
-    # Standard Elo-style sigmoid curve to calculate Win Probability (0.0 to 1.0)
-    return 1 / (1 + 10 ** (-cp / 400))
 
-def _least_valuable_attacker(board, square, color):
-    """
-    Square of the cheapest `color` piece that can legally recapture on `square`,
-    or None if there isn't one. Excludes pieces that are absolutely pinned in a
-    way that forbids this particular capture, and excludes the king if
-    recapturing would walk it into another attacker's line.
-    """
-    attackers = board.attackers(color, square)
-    if not attackers:
-        return None
+def accuracy_from_acpl(acpl):
+    return round(max(10, min(99, 100 * (0.98 ** acpl))))
 
-    def sort_value(sq):
-        piece = board.piece_at(sq)
-        return VALUES[_promoted_type(piece.piece_type, piece.color, square)]
 
-    for sq in sorted(attackers, key=sort_value):
-        piece = board.piece_at(sq)
-        if piece.piece_type == chess.KING:
-            if board.attackers(not color, square):
-                continue  # would be moving into check
-        elif square not in board.pin(color, sq):
-            continue  # pinned to its own king along a different line
-        return sq
+# --------------------------------------------------------------------------
+# Session state
+# --------------------------------------------------------------------------
+ss = st.session_state
+ss.setdefault("ready", False)
+ss.setdefault("view_ply", 0)          # 0 = starting position
+ss.setdefault("flipped", False)
+ss.setdefault("exploring", False)
+ss.setdefault("ex_fens", [])
+ss.setdefault("ex_sans", [])
+ss.setdefault("ex_sel", None)
+
+
+def enter_explore(start_fen):
+    ss.exploring = True
+    ss.ex_fens = [start_fen]
+    ss.ex_sans = []
+    ss.ex_sel = None
+
+
+def leave_explore():
+    ss.exploring = False
+    ss.ex_sel = None
+
+
+def play_explore_move(uci):
+    b = chess.Board(ss.ex_fens[-1])
+    mv = chess.Move.from_uci(uci)
+    if mv in b.legal_moves:
+        san = b.san(mv)
+        b.push(mv)
+        ss.ex_fens.append(b.fen())
+        ss.ex_sans.append(san)
+        ss.ex_sel = None
+
+
+def _find_move(board, frm, to):
+    for mv in board.legal_moves:
+        if mv.from_square == frm and mv.to_square == to:
+            if mv.promotion and mv.promotion != chess.QUEEN:
+                continue                      # auto-queen
+            return mv
     return None
 
-def static_exchange_eval(board, move):
-    """
-    Plays out the entire forced capture sequence on move.to_square — cheapest
-    legal attacker recaptures each time — then unwinds it so each side only
-    "takes" when doing so doesn't lose them more than walking away would.
 
-    Returns the net material swing for the side making `move`.
-    Negative      -> the mover ends up worse off overall: a genuine sacrifice.
-    Zero/positive -> the mover is fine, even if several pieces get traded on the square.
-    """
-    to_sq, from_sq = move.to_square, move.from_square
+# --------------------------------------------------------------------------
+# Sidebar / input
+# --------------------------------------------------------------------------
+st.markdown("## ♟️ AI Chess Game Reviewer")
 
-    mover = board.piece_at(from_sq)
-    if mover is None:
-        return 0
+if ENGINE_PATH is None:
+    st.error(
+        "Stockfish not found. Put the binary next to app.py (named `stockfish` / "
+        "`stockfish.exe`), or add a `packages.txt` containing `stockfish` when "
+        "deploying on Streamlit Cloud."
+    )
 
-    scratch = board.copy(stack=False)  # never touch the real board/move stack
-
-    if board.is_en_passant(move):
-        captured_sq = chess.square(chess.square_file(to_sq), chess.square_rank(from_sq))
-        gain = [VALUES[chess.PAWN]]
-        scratch.remove_piece_at(captured_sq)
-    else:
-        captured = scratch.piece_at(to_sq)
-        gain = [VALUES.get(captured.piece_type, 0) if captured else 0]
-
-    mover_type = _promoted_type(mover.piece_type, mover.color, to_sq, move.promotion)
-    attacker_value = VALUES[mover_type]
-    side = not mover.color  # opponent gets first crack at recapturing
-
-    scratch.remove_piece_at(from_sq)
-    scratch.set_piece_at(to_sq, chess.Piece(mover_type, mover.color))
-
-    depth = 0
-    while True:
-        attacker_sq = _least_valuable_attacker(scratch, to_sq, side)
-        if attacker_sq is None:
-            break
-
-        depth += 1
-        gain.append(attacker_value - gain[depth - 1])
-
-        attacker_piece = scratch.piece_at(attacker_sq)
-        attacker_type = _promoted_type(attacker_piece.piece_type, attacker_piece.color, to_sq)
-        attacker_value = VALUES[attacker_type]
-
-        scratch.remove_piece_at(attacker_sq)
-        scratch.set_piece_at(to_sq, chess.Piece(attacker_type, attacker_piece.color))
-        side = not side
-
-    while depth:
-        gain[depth - 1] = -max(-gain[depth - 1], gain[depth])
-        depth -= 1
-
-    return gain[0]
-
-def is_sacrifice(board, move):
-    """True if the full exchange on move.to_square leaves the mover down material."""
-    if not board.piece_at(move.from_square):
-        return False
-
-    if not board.attackers(not board.turn, move.to_square):
-        return False
-
-    return static_exchange_eval(board, move) < 0
-
-def classify_move(move_number, prev_cp, curr_cp, is_only_move, is_sac):
-    wp_before = cp_to_wp(prev_cp)
-    wp_after = cp_to_wp(curr_cp)
-    wp_loss = wp_before - wp_after
-    
-    # --- BAD MOVES ---
-    if wp_loss >= 0.22:
-        return "Blunder"
-    elif wp_loss >= 0.16:
-        return "Mistake"
-    elif wp_loss >= 0.10:
-        return "Inaccuracy"
-    elif wp_loss >= 0.05:
-        return "Good"
-    elif wp_loss >= 0.01:
-        return "Excellent"
-        
-    # --- GOOD/SPECIAL MOVES ---
-    else:
-        # To be brilliant or great, the move must be fundamentally sound (Best)
-        
-        # BRILLIANT: It's a sacrifice, and Win Probability did NOT decrease significantly
-        if is_sac and wp_loss <= 0.01 and wp_after > 0.20:
-            return "Brilliant"
-            
-        # GREAT: It was the only move that didn't ruin the position
-        elif is_only_move and wp_after > 0.10:
-            return "Great"
-            
+with st.expander("➕ Analyze a new game", expanded=not ss.ready):
+    player_color = st.radio("Your color", ("White", "Black"), horizontal=True,
+                            key="player_color")
+    pgn_input = st.text_area("Paste PGN", height=140, key="pgn_input")
+    if st.button("Review Game", type="primary", disabled=(ENGINE_PATH is None)):
+        if not pgn_input.strip():
+            st.warning("Paste a PGN first.")
         else:
-            return "Best"
+            try:
+                with st.spinner("Stockfish is analyzing every move..."):
+                    md, stats, meta, hist = run_full_analysis(pgn_input, DEPTH)
+                with st.spinner("Coach is writing your review..."):
+                    summary, comments = coach_mod.generate_coach(
+                        md, player_color, gemini_client)
+                ss.move_data = md
+                ss.stats = stats
+                ss.meta = meta
+                ss.hist = hist
+                ss.summary = summary
+                ss.comments = comments
+                ss.ready = True
+                ss.view_ply = 0
+                ss.flipped = (player_color == "Black")
+                leave_explore()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not analyze game: {e}")
 
-# --- CONFIGURATION ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if platform.system() == "Windows":
-    ENGINE_PATH = os.path.join(BASE_DIR, "stockfishw.exe")
+if not ss.ready:
+    st.info("Paste a PGN above and press **Review Game** to begin.")
+    st.stop()
+
+
+# --------------------------------------------------------------------------
+# Data for the current view
+# --------------------------------------------------------------------------
+md = ss.move_data
+meta = ss.meta
+stats = ss.stats
+n = len(md)
+ply = min(ss.view_ply, n)
+
+if ply == 0:
+    cur_fen = chess.STARTING_FEN
+    last_uci = None
+    cur_cp_white = 0
+    cur = None
 else:
-    ENGINE_PATH = os.path.join(BASE_DIR, "stockfish")
-
-API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
-
-if API_KEY:
-    gemini_client = genai.Client(api_key=API_KEY)
-else:
-    st.error("Gemini API Key missing! Please configure it in your Streamlit Secrets.")
-    gemini_client = None
-
-# --- AI COACH GENERATION ---
-def get_coach_comments(move_data, player_color):
-    # Ultra-compressed payload: We only send the move, the eval, and Stockfish's classification
-    prompt_data = [{"m": m["move"], "eval": m["evaluation"], "class": m["classification"]} for m in move_data]
-    
-    prompt = f"""Role: Expert chess coach for {player_color}.
-    Task: Write a 1-2 line game summary, and write exactly ONE short sentence of commentary for each move.
-    
-    The moves have ALREADY been classified by the engine (e.g., Blunder, Best, Inaccuracy). 
-    Your job is ONLY to provide the natural language comment explaining the move based on its classification and evaluation.
-
-    CRITICAL: I provided {len(prompt_data)} moves. You MUST return EXACTLY {len(prompt_data)} JSON objects in the "moves" array.
-    
-    DATA: {json.dumps(prompt_data)}
-    
-    Format:
-    {{
-        "game_summary": "...",
-        "moves": [
-            {{"comment": "<Your 1 sentence explanation>"}}
-        ]
-    }}"""
-    
-    try:
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=genai.types.GenerateContentConfig(
-                system_instruction="You are a helpful AI chess coach that outputs strict JSON.",
-                response_mime_type="application/json",
-                temperature=0.2,
-            ),
-        )
-        
-        clean_text = response.text.strip()
-        parsed = json.loads(clean_text)
-        
-        return parsed.get("game_summary", "A tough game!"), parsed.get("moves", [])
-        
-    except Exception as e:
-        st.error(f"Coach API Error: {str(e)}")
-        return "The Coach experienced an error while generating the summary.", []
-
-# --- ANALYSIS ENGINE ---
-def analyze_game(pgn_str, engine_path, player_color):
-    try:
-        if platform.system() != "Windows" and os.path.exists(engine_path):
-            os.chmod(engine_path, 0o755)
-        engine = chess.engine.SimpleEngine.popen_uci(engine_path)
-    except Exception as e:
-        st.error(f"Failed to start Stockfish engine.\n\nError: {e}")
-        return None, 0, 0, {}
-
-    pgn_io = io.StringIO(pgn_str)
-    game = chess.pgn.read_game(pgn_io)
-    if game is None:
-        st.error("Invalid PGN format.")
-        return None, 0, 0, {}
-    
-    metadata = {
-        "White": f"{game.headers.get('White', 'White')} ({game.headers.get('WhiteElo', '?')})",
-        "Black": f"{game.headers.get('Black', 'Black')} ({game.headers.get('BlackElo', '?')})"
-    }
-    
-    board = game.board()
-    move_data = []
-    total_cp_loss = 0
-    analyzed_moves = 0
-    
-    limit = chess.engine.Limit(depth=14)
-    # --- NEW: Run Multi-PV right from the start ---
-    prev_info = engine.analyse(board, limit, multipv=2)
-    prev_cp_white = prev_info[0]["score"].white().score(mate_score=10000)
-    
-    node = game
-    w_clk = None
-    b_clk = None
-    
-    for i, move in enumerate(game.mainline_moves()):
-        san_move = board.san(move)
-        
-        # --- NEW: Check for sacrifice BEFORE the move is made ---
-        is_sac = is_sacrifice(board, move)
-        
-        # --- NEW: Check the second best move of the PREVIOUS position ---
-        # This accurately tells us if the move they were about to make was the "Only Move"
-        if len(prev_info) > 1:
-            prev_second_best_cp_white = prev_info[1]["score"].white().score(mate_score=10000)
-        else:
-            prev_second_best_cp_white = prev_cp_white
-            
-        board.push(move)
-        
-        node = node.variation(move)
-        clock_seconds = node.clock()
-        if board.turn == chess.BLACK: # White just moved
-            w_clk = clock_seconds
-        else:
-            b_clk = clock_seconds
-            
-        # --- NEW: Evaluate the new position with Multi-PV ---
-        info = engine.analyse(board, limit, multipv=2)
-        score = info[0]["score"].white()
-        curr_cp_white = score.score(mate_score=10000)
-        
-        if score.is_mate(): eval_str = f"#{score.mate()}"
-        else: eval_str = f"{score.score() / 100.0:+.2f}"
-        
-        # --- NEW: Get the CP from the moving player's perspective ---
-        if board.turn == chess.BLACK: # White just moved
-            player_prev_cp = prev_cp_white
-            player_curr_cp = curr_cp_white
-            second_best_cp = prev_second_best_cp_white
-            is_player_move = (player_color == "White")
-            turn_name = "White"
-        else: # Black just moved
-            player_prev_cp = -prev_cp_white
-            player_curr_cp = -curr_cp_white
-            second_best_cp = -prev_second_best_cp_white
-            is_player_move = (player_color == "Black")
-            turn_name = "Black"
-            
-        # --- NEW: Only Move Logic ---
-        # Calculate win probability of the best move vs the second best move
-        wp_best = cp_to_wp(player_prev_cp)
-        wp_second = cp_to_wp(second_best_cp)
-        # If the gap between the best move and second best move is huge (20%+), it's an only move!
-        is_only_move = (wp_best - wp_second >= 0.20)
-            
-        # Standard cp_loss for the overall ACPL math
-        cp_loss = max(0, player_prev_cp - player_curr_cp) 
-        if is_player_move:
-            total_cp_loss += cp_loss
-            analyzed_moves += 1
-            
-        # --- NEW: Call the Win Probability classifier! ---
-        move_classification = classify_move((i // 2) + 1, player_prev_cp, player_curr_cp, is_only_move, is_sac)
-            
-        move_data.append({
-            "move_number": (i // 2) + 1,
-            "turn": turn_name,
-            "move": san_move, 
-            "uci_move": move.uci(), 
-            "cp_loss": cp_loss,  
-            "evaluation": eval_str, 
-            "classification": move_classification,
-            "fen": board.fen(),
-            "w_clk": w_clk,
-            "b_clk": b_clk
-        })
-        
-        # --- NEW: Save current state for the next iteration ---
-        prev_info = info
-        prev_cp_white = curr_cp_white
-
-    engine.quit()
-    acpl = total_cp_loss / max(1, analyzed_moves)
-    estimated_rating = round(3100/(2.718**(0.01*acpl)))
-    
-    return move_data, estimated_rating, round(acpl, 1), metadata
+    cur = md[ply - 1]
+    cur_fen = cur["fen"]
+    last_uci = cur["uci"]
+    cur_cp_white = cur["eval_cp_white"]
 
 
-# --- UI SETUP ---
-st.set_page_config(page_title="AI Chess Reviewer", layout="wide")
-st.title("♟️ AI Chess Game Reviewer")
+# --------------------------------------------------------------------------
+# Header: player accuracy / rating (chess.com-style)
+# --------------------------------------------------------------------------
+h1, h2, h3 = st.columns([1, 1, 0.5])
+with h1:
+    st.markdown(f"**⚪ {meta['White']}** ({meta['WhiteElo']})")
+    st.markdown(f"Accuracy **{accuracy_from_acpl(stats['White']['acpl'])}** · "
+                f"Est. **{stats['White']['rating']}**")
+with h2:
+    st.markdown(f"**⚫ {meta['Black']}** ({meta['BlackElo']})")
+    st.markdown(f"Accuracy **{accuracy_from_acpl(stats['Black']['acpl'])}** · "
+                f"Est. **{stats['Black']['rating']}**")
+with h3:
+    st.button("🔄 Flip", on_click=lambda: ss.__setitem__("flipped", not ss.flipped),
+              use_container_width=True)
 
-if "analysis_complete" not in st.session_state:
-    st.session_state.analysis_complete = False
+st.divider()
 
-player_color = st.radio("Your Color:", ("White", "Black"), horizontal=True)
-pgn_input = st.text_area("Paste PGN here:", height=150)
+board_col, panel_col = st.columns([1.15, 1], gap="large")
 
-# --- BUTTON LOGIC ---
-if st.button("Review Game", type="primary"):
-    if not pgn_input:
-        st.warning("Please paste a game PGN first.")
+
+# --------------------------------------------------------------------------
+# LEFT: eval bar + board + nav
+# --------------------------------------------------------------------------
+def eval_bar_html(cp_white, height=520):
+    wp = eng.cp_to_wp(cp_white)                 # 0..1 for white
+    white_h = int(wp * height)
+    return (
+        f'<div style="width:26px;height:{height}px;background:#403e3b;border-radius:4px;'
+        f'overflow:hidden;position:relative;box-shadow:inset 0 0 4px rgba(0,0,0,.5);">'
+        f'<div style="position:absolute;bottom:0;width:100%;height:{white_h}px;'
+        f'background:#f5f5f0;transition:height .2s;"></div></div>')
+
+
+with board_col:
+    bar_c, brd_c = st.columns([0.09, 1])
+    with bar_c:
+        st.markdown(eval_bar_html(cur_cp_white), unsafe_allow_html=True)
+    with brd_c:
+        badge = cur["classification"] if cur else None
+        arrow = None
+        # show the engine's preferred move as an arrow when the player erred
+        if cur and cur["classification"] in ("Blunder", "Mistake", "Inaccuracy"):
+            fb = md[ply - 1]["fen_before"]
+            best = analyse_fen_cached(fb, DEPTH)[0]["first_uci"]
+            arrow = best
+        html = render_board(cur_fen, size=520, flipped=ss.flipped,
+                            last_move_uci=last_uci, badge_class=badge,
+                            arrow_uci=arrow, clickable=False)
+        st.markdown(html, unsafe_allow_html=True)
+
+    # navigation (buttons + scrubber — all state-preserving Streamlit widgets)
+    ss.view_ply = min(ss.view_ply, n)          # clamp before the slider widget
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.button("⏮", on_click=lambda: ss.__setitem__("view_ply", 0),
+              use_container_width=True, disabled=(ply == 0))
+    c2.button("◀", on_click=lambda: ss.__setitem__("view_ply", max(0, ply - 1)),
+              use_container_width=True, disabled=(ply == 0))
+    c3.markdown(f"<div style='text-align:center;padding-top:6px;font-weight:700;'>"
+                f"{ply}/{n}</div>", unsafe_allow_html=True)
+    c4.button("▶", on_click=lambda: ss.__setitem__("view_ply", min(n, ply + 1)),
+              use_container_width=True, disabled=(ply >= n))
+    c5.button("⏭", on_click=lambda: ss.__setitem__("view_ply", n),
+              use_container_width=True, disabled=(ply >= n))
+    if n > 0:
+        st.slider("Move", 0, n, key="view_ply", label_visibility="collapsed")
+
+
+# --------------------------------------------------------------------------
+# RIGHT: coach bubble + move list + eval graph + explorer entry
+# --------------------------------------------------------------------------
+def coach_bubble(text, cls):
+    glyph, colour = BADGE.get(cls, ("•", "#8b8987"))
+    header = (f'<span style="display:inline-block;background:{colour};color:#fff;'
+              f'border-radius:12px;padding:1px 10px;font-weight:800;font-size:13px;">'
+              f'{glyph} {cls}</span>') if cls else ""
+    return (
+        f'<div style="background:#fff;border-radius:14px;padding:14px 16px;'
+        f'box-shadow:0 2px 10px rgba(0,0,0,.12);color:#2b2b2b;line-height:1.45;">'
+        f'{header}<div style="margin-top:8px;">{text}</div></div>')
+
+
+with panel_col:
+    st.markdown("### ⭐ Game Review")
+    if ply == 0:
+        st.markdown(coach_bubble(ss.summary, None), unsafe_allow_html=True)
     else:
-        with st.spinner("Stockfish running deep analysis..."):
-            moves, rating, acpl, metadata = analyze_game(pgn_input, ENGINE_PATH, player_color)
-            
-        if moves:
-            with st.spinner("AI Coach is drafting your review..."):
-                summary, ai_responses = get_coach_comments(moves, player_color)
-            
-            final_comments = []
-            for i, move in enumerate(moves):
-                if i < len(ai_responses) and isinstance(ai_responses[i], dict):
-                    # --- NEW: We ONLY take the comment. We trust Stockfish's classification! ---
-                    final_comments.append(ai_responses[i].get("comment", "No comment provided."))
-                else:
-                    final_comments.append("Coach had trouble analyzing this move.")
-            
-            st.session_state.metadata = metadata
-            st.session_state.rating = rating
-            st.session_state.acpl = acpl
-            st.session_state.moves = moves
-            st.session_state.comments = final_comments
-            st.session_state.game_summary = summary
-            st.session_state.analysis_complete = True
-            st.session_state.move_index = 0
-            
-            st.success("Analysis and Coach Review Complete!")
+        comment = ss.comments[ply - 1] if ply - 1 < len(ss.comments) else ""
+        st.markdown(coach_bubble(f"<b>{cur['turn']} played {cur['san']}</b> "
+                                 f"(eval {cur['eval']}).<br>{comment}",
+                                 cur["classification"]), unsafe_allow_html=True)
 
+    # ---- eval graph (SVG area chart) ----
+    st.markdown("#### Evaluation")
+    hist = ss.hist
+    W, H = 100, 46
+    pts = []
+    for i, v in enumerate(hist):
+        x = (i / max(1, len(hist) - 1)) * W
+        y = H / 2 - (max(-6, min(6, v)) / 6) * (H / 2)
+        pts.append((x, y))
+    path = " ".join(f"{'M' if i == 0 else 'L'}{x:.1f},{y:.1f}" for i, (x, y) in enumerate(pts))
+    area = (f"M0,{H/2} " +
+            " ".join(f"L{x:.1f},{y:.1f}" for x, y in pts) +
+            f" L{W},{H/2} Z")
+    mx = pts[min(ply, len(pts) - 1)][0]
+    graph = (
+        f'<svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" '
+        f'style="width:100%;height:70px;background:#403e3b;border-radius:6px;">'
+        f'<line x1="0" y1="{H/2}" x2="{W}" y2="{H/2}" stroke="#5c5a57" stroke-width="0.4"/>'
+        f'<path d="{area}" fill="#f5f5f0" fill-opacity="0.85"/>'
+        f'<path d="{path}" fill="none" stroke="#9c9a97" stroke-width="0.5"/>'
+        f'<line x1="{mx:.1f}" y1="0" x2="{mx:.1f}" y2="{H}" stroke="#e58f2a" stroke-width="0.6"/>'
+        f'</svg>')
+    st.markdown(graph, unsafe_allow_html=True)
 
-# =========================================================================
-# --- INTERACTIVE CHESS BOARD ---
-# =========================================================================
-if st.session_state.analysis_complete:
-    st.divider()
-    
-    m_col1, m_col2 = st.columns(2)
-    with m_col1:
-        st.metric(label="Estimated Performance Rating", value=f"{st.session_state.rating} ELO")
-    with m_col2:
-        if "acpl" in st.session_state:
-            st.metric(label="Avg. Centipawn Loss (ACPL)", value=f"{st.session_state.acpl}")
-    
-    st.divider()
+    # ---- move list (chess.com-style, current move highlighted) ----
+    st.markdown("#### Moves")
+    rows = []
+    i = 0
+    while i < n:
+        w = md[i]
+        b = md[i + 1] if i + 1 < n else None
 
-    moves = st.session_state.moves
-    comments = st.session_state.comments
+        def cell(m, idx):
+            if m is None:
+                return "<td></td>"
+            g, c = BADGE.get(m["classification"], ("", "#666"))
+            hl = "background:#4a4844;border-radius:4px;" if (idx + 1) == ply else ""
+            return (f'<td style="padding:2px 4px;{hl}color:#e8e8e8;">'
+                    f'{m["san"]} <span style="color:{c};font-weight:800;">{g}</span></td>')
 
-    # --- MATCH ACCURACY REPORT ---
-    st.subheader("📊 Match Accuracy Report")
-    cat_colors = {"Brilliant": "green", "Great": "green", "Best": "green", "Excellent": "green", "Good": "green", "Book": "green", "Inaccuracy": "blue", "Mistake": "orange", "Miss": "red", "Blunder": "red"}
-    white_counts = {cat: 0 for cat in cat_colors}
-    black_counts = {cat: 0 for cat in cat_colors}
-    
-    for m in moves:
-        cat = m.get("classification", "Good")
-        if m["turn"] == "White":
-            if cat in white_counts: white_counts[cat] += 1
-        else:
-            if cat in black_counts: black_counts[cat] += 1
+        rows.append(f'<tr><td style="color:#8b8987;width:26px;">{w["move_number"]}.</td>'
+                    f'{cell(w, i)}{cell(b, i + 1)}</tr>')
+        i += 2
+    table = (f'<div style="max-height:220px;overflow-y:auto;background:#302e2b;'
+             f'border-radius:6px;padding:6px 8px;font-size:14px;">'
+             f'<table style="width:100%;border-collapse:collapse;">{"".join(rows)}</table></div>')
+    st.markdown(table, unsafe_allow_html=True)
 
-    rep_col1, rep_col2 = st.columns(2)
-    for col, data in [(rep_col1, white_counts), (rep_col2, black_counts)]:
-        with col:
-            st.markdown(f"### {'⚪ White' if col == rep_col1 else '⚫ Black'}")
-            for cat, count in data.items():
-                if count > 0:
-                    color = cat_colors.get(cat, "gray")
-                    st.markdown(f"- :{color}[**{cat}**]: {count}")
-    
-    st.divider()
-
-    # --- NAVIGATION CALLBACKS ---
-    if "move_index" not in st.session_state:
-        st.session_state.move_index = 0
-
-    def go_previous():
-        if st.session_state.move_index > 0:
-            st.session_state.move_index -= 1
-
-    def go_next():
-        if st.session_state.move_index < len(st.session_state.moves):
-            st.session_state.move_index += 1
-
-    # --- NEW LAYOUT: Board Left, Text Right ---
-    board_col, text_col = st.columns([1.5, 1.2], gap="large")
-    
-    is_flipped = (player_color == "Black")
-    board_size = 600
-    sq_size = board_size / 8
-    
-    wood_colors = {
-        'square light': '#F0D9B5', 
-        'square dark': '#B58863',
-        'margin': '#21201D'
-    }
-
-    def draw_player_banner(name_str, clock_sec, is_active):
-        bg_color = "#333333" if is_active else "#21201D"
-        clock_bg = "#FFFFFF" if is_active else "#555555"
-        clock_text = "#000000" if is_active else "#AAAAAA"
-        banner = f"""
-        <div style="display: flex; justify-content: space-between; align-items: center; 
-                    background-color: {bg_color}; padding: 10px 15px; border-radius: 5px; 
-                    margin: 5px 0px; color: white; width: {board_size}px; font-family: sans-serif;">
-            <div style="font-weight: bold; font-size: 16px;">♟️ {name_str}</div>
-            <div style="background-color: {clock_bg}; color: {clock_text}; font-weight: bold; 
-                        font-size: 18px; padding: 4px 10px; border-radius: 4px; font-family: monospace;">
-                ⏱️ {format_clock(clock_sec)}
-            </div>
-        </div>
-        """
-        st.markdown(banner, unsafe_allow_html=True)
-
-    # --- MOVE 0 (STARTING POSITION) ---
-    if st.session_state.move_index == 0:
-        with board_col:
-            top_name = st.session_state.metadata["White"] if is_flipped else st.session_state.metadata["Black"]
-            bot_name = st.session_state.metadata["Black"] if is_flipped else st.session_state.metadata["White"]
-            draw_player_banner(top_name, None, False)
-            board_svg = chess.svg.board(board=chess.Board(), size=board_size, flipped=is_flipped, colors=wood_colors).replace("\n", "")
-            st.markdown(f"<div style='width: {board_size}px;'>{board_svg}</div>", unsafe_allow_html=True)
-            draw_player_banner(bot_name, None, False)
-
-        with text_col:
-            st.subheader("Game Overview")
-            st.info(f"**Coach's Summary:**\n\n{st.session_state.game_summary}")
-
-    # --- SPECIFIC MOVE (1+) ---
+    # ---- explorer entry ----
+    st.markdown("---")
+    if not ss.exploring:
+        st.button("🔍 Explore variations from here", use_container_width=True,
+                  on_click=lambda: enter_explore(cur_fen))
     else:
-        current_move = moves[st.session_state.move_index - 1]
-        
-        with board_col:
-            if is_flipped:
-                top_name, top_clk = st.session_state.metadata["White"], current_move.get("w_clk")
-                bot_name, bot_clk = st.session_state.metadata["Black"], current_move.get("b_clk")
-            else:
-                top_name, top_clk = st.session_state.metadata["Black"], current_move.get("b_clk")
-                bot_name, bot_clk = st.session_state.metadata["White"], current_move.get("w_clk")
-            
-            draw_player_banner(top_name, top_clk, is_active=(current_move["turn"] != ("Black" if is_flipped else "White")))
-            
-            move_obj = chess.Move.from_uci(current_move["uci_move"])
-            board_svg = chess.svg.board(board=chess.Board(current_move["fen"]), lastmove=move_obj, size=board_size, flipped=is_flipped, colors=wood_colors).replace("\n", "")
-            
-            to_sq = move_obj.to_square
-            file = chess.square_file(to_sq) 
-            rank = 7 - chess.square_rank(to_sq) 
-            if is_flipped:
-                file = 7 - file
-                rank = 7 - rank
-                
-            left_pos = (file * sq_size) + (sq_size * 0.6)
-            top_pos = (rank * sq_size) - (sq_size * 0.2)
-            
-            cat = current_move.get("classification", "Good")
-            icon_path = f"icons/{cat}.png"
-            overlay_html = ""
-            if os.path.exists(icon_path):
-                with open(icon_path, "rb") as image_file:
-                    encoded = base64.b64encode(image_file.read()).decode()
-                    overlay_html = f'<img src="data:image/png;base64,{encoded}" style="position: absolute; left: {left_pos}px; top: {top_pos}px; width: 32px; z-index: 10;">'
-            
-            container_html = f"<div style='position: relative; width: {board_size}px; height: {board_size}px;'>{board_svg}{overlay_html}</div>"
-            st.markdown(container_html, unsafe_allow_html=True)
-            draw_player_banner(bot_name, bot_clk, is_active=(current_move["turn"] == ("Black" if is_flipped else "White")))
+        st.button("✖ Close explorer", use_container_width=True, on_click=leave_explore)
 
-        with text_col:
-            st.subheader(f"{current_move['turn']} played:")
-            cat = current_move.get("classification", "Good")
-            icon_html = get_icon_html(cat)
-            
-            if icon_html:
-                 st.markdown(f"<h1 style='margin-bottom: 5px;'>{icon_html} {cat}</h1>", unsafe_allow_html=True)
-            else:
-                 color = "🔵"
-                 if cat in ["Blunder", "Miss"]: color = "🔴"
-                 elif cat in ["Brilliant", "Great", "Best", "Excellent", "Book"]: color = "🟢"
-                 elif cat in ["Mistake"]: color = "🟠"
-                 st.markdown(f"<h1 style='margin-bottom: 5px;'>{color} {cat}</h1>", unsafe_allow_html=True)
-                 
-            eval_score = current_move["evaluation"]
-            eval_box_html = f"""<div style="display: inline-block; background-color: #2e2e36; border: 1px solid #4a4a5a; border-radius: 6px; padding: 4px 10px; margin-bottom: 15px; font-family: monospace; font-size: 16px; font-weight: bold; color: #e0e0e0;">📈 Eval: {eval_score}</div>"""
-            st.markdown(eval_box_html, unsafe_allow_html=True)
-            st.markdown(f"### Move: **{current_move['move']}**")
-            
-            if (st.session_state.move_index - 1) < len(comments):
-                st.info(f"**Coach's Tactical Insight:**\n\n{comments[st.session_state.move_index - 1]}")
 
-    # --- NAVIGATION BELOW THE BOARD ---
-    with board_col:
-        nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
-        with nav_col1:
-            st.button("⬅️ Prev", on_click=go_previous, disabled=(st.session_state.move_index <= 0), use_container_width=True)
-        with nav_col2:
-            if st.session_state.move_index == 0:
-                st.markdown("<div style='text-align: center; padding-top: 5px; font-weight: bold;'>Start</div>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<div style='text-align: center; padding-top: 5px; font-weight: bold;'>Move {st.session_state.move_index} / {len(moves)}</div>", unsafe_allow_html=True)
-        with nav_col3:
-            st.button("Next ➡️", on_click=go_next, disabled=(st.session_state.move_index >= len(moves)), use_container_width=True)
-
+# --------------------------------------------------------------------------
+# LIVE VARIATION EXPLORER (real-time Stockfish, no Gemini)
+# --------------------------------------------------------------------------
+if ss.exploring:
     st.divider()
-    with st.expander("Show Full Move List"):
-        for i, m in enumerate(moves):
-            color_tag = "⚪" if m["turn"] == "White" else "⚫"
-            status_color = "normal"
-            if m["classification"] in ["Blunder", "Miss"]: status_color = "red"
-            elif m["classification"] in ["Brilliant", "Great", "Best", "Excellent", "Book"]: status_color = "green"
-            elif m["classification"] == "Mistake": status_color = "orange"
-            
-            bold_prefix = "**👉** " if (i + 1) == st.session_state.move_index else ""
-            st.markdown(f"{bold_prefix}**{m['move_number']}. {color_tag} {m['move']}** — :{status_color}[**{m['classification']}**]")
+    st.markdown("### 🔬 Live Variation Explorer")
+    st.caption("Click a piece then its destination, or use the buttons below. "
+               "Every position is analyzed live by Stockfish — no AI-coach calls used here.")
+
+    ex_fen = ss.ex_fens[-1]
+    ex_board = chess.Board(ex_fen)
+    lines = analyse_fen_cached(ex_fen, DEPTH)
+
+    ex_col, ex_panel = st.columns([1.15, 1], gap="large")
+
+    with ex_col:
+        last = None
+        if ss.ex_sans:
+            # reconstruct last move uci for highlight
+            prev = chess.Board(ss.ex_fens[-2])
+            for m in prev.legal_moves:
+                if prev.san(m) == ss.ex_sans[-1]:
+                    last = m.uci()
+                    break
+        top_arrow = lines[0]["first_uci"] if lines else None
+        html = render_board(ex_fen, size=520, flipped=ss.flipped,
+                            last_move_uci=last, arrow_uci=top_arrow,
+                            clickable=False)
+        st.markdown(html, unsafe_allow_html=True)
+
+        b1, b2 = st.columns(2)
+        b1.button("↩ Undo move", use_container_width=True,
+                  disabled=(len(ss.ex_fens) <= 1),
+                  on_click=lambda: (ss.ex_fens.pop(), ss.ex_sans.pop()))
+        b2.button("⟲ Reset to game", use_container_width=True,
+                  disabled=(len(ss.ex_fens) <= 1),
+                  on_click=lambda: (ss.__setitem__("ex_fens", ss.ex_fens[:1]),
+                                    ss.__setitem__("ex_sans", [])))
+
+    with ex_panel:
+        turn = "White" if ex_board.turn == chess.WHITE else "Black"
+        top_eval = lines[0]["eval"] if lines else "?"
+        st.markdown(f"**{turn} to move — engine eval {top_eval}**")
+        if ss.ex_sans:
+            st.markdown("**Your line:** " + " ".join(ss.ex_sans))
+
+        st.markdown("**Top engine moves** (click to play):")
+        for k, ln in enumerate(lines):
+            if not ln["first_uci"]:
+                continue
+            first_san = ln["san_line"][0] if ln["san_line"] else ln["first_uci"]
+            line_txt = " ".join(ln["san_line"])
+            st.button(f'{first_san}   ({ln["eval"]})   —   {line_txt}',
+                      key=f"eng_{k}_{len(ss.ex_fens)}",
+                      use_container_width=True,
+                      on_click=play_explore_move, args=(ln["first_uci"],))
+
+        # full legal-move fallback (always works, even if clicks don't)
+        with st.expander("Or pick any legal move"):
+            legal = sorted(ex_board.san(m) for m in ex_board.legal_moves)
+            choice = st.selectbox("Legal moves", legal, key=f"legal_{len(ss.ex_fens)}")
+            if st.button("Play move", key=f"playlegal_{len(ss.ex_fens)}"):
+                mv = ex_board.parse_san(choice)
+                play_explore_move(mv.uci())
+                st.rerun()
+
+        if ex_board.is_checkmate():
+            st.success("Checkmate!")
+        elif ex_board.is_stalemate():
+            st.info("Stalemate.")

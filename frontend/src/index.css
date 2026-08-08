@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: #21201d;
+  color: #e8e8e8;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.eval-bar-transition {
+  transition: height 0.25s ease;
+}
+
+.move-list-scroll {
+  scrollbar-color: #5c5a57 #302e2b;
+  scrollbar-width: thin;
+}
