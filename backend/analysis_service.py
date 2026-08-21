@@ -34,7 +34,7 @@ class AnalysisService:
         if self._engine is None:
             self._engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
             try:
-                self._engine.configure({"Threads": 4, "Hash": 256})
+                self._engine.configure({"Threads": 1, "Hash": 32})
             except chess.engine.EngineError:
                 pass
         return self._engine

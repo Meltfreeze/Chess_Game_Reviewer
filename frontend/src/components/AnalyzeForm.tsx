@@ -48,6 +48,8 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
             onChange={(e) => setDepth(Number(e.target.value))}
             className="bg-panelBorder rounded px-2 py-1"
           >
+            <option value={12}>12</option>
+            <option value={14}>14</option>
             <option value={16}>16</option>
             <option value={18}>18</option>
             <option value={20}>20</option>
