@@ -1,4 +1,5 @@
 import { Chessboard } from "react-chessboard";
+import type { Square } from "react-chessboard/dist/chessboard/types";
 import type { Classification } from "../types";
 import { iconUrl } from "../api/client";
 
@@ -26,9 +27,9 @@ interface ReviewBoardProps {
   interactive?: boolean;
 }
 
-function parseUci(uci: string | null | undefined): [string, string] | null {
+function parseUci(uci: string | null | undefined): [Square, Square] | null {
   if (!uci || uci.length < 4) return null;
-  return [uci.slice(0, 2), uci.slice(2, 4)];
+  return [uci.slice(0, 2) as Square, uci.slice(2, 4) as Square];
 }
 
 export default function ReviewBoard({
@@ -51,7 +52,7 @@ export default function ReviewBoard({
   }
 
   const arrows = arrow
-    ? [[arrow[0], arrow[1], "rgba(17, 119, 45, 0.75)"] as [string, string, string]]
+    ? [[arrow[0], arrow[1], "rgba(17, 119, 45, 0.75)"] as [Square, Square, string]]
     : [];
 
   const badgeSquare = last?.[1];

@@ -1,92 +1,89 @@
 # AI Chess Game Reviewer
 
-A chess.com-style game review app built on Streamlit + Stockfish + Gemini.
+A chess.com-style game review app: a FastAPI backend (Stockfish + Gemini) and a
+React frontend.
 
-## Files
+## Architecture
+
+```
+backend/   FastAPI app. Stockfish is the only source of chess truth;
+           Gemini only rephrases facts the engine has already verified.
+frontend/  React + Vite + TypeScript SPA. Talks to the backend over HTTP/SSE.
+icons/     Move-classification badge images, served by the backend.
+```
 
 | File | Purpose |
 |------|---------|
-| `app.py` | Streamlit UI: review mode + live variation explorer |
-| `engine.py` | All chess analysis. **Stockfish is the only source of truth.** |
-| `coach.py` | Turns engine-verified facts into text (templates + one Gemini call) |
-| `board.py` | chess.com-style HTML/CSS board renderer |
-| `pieces.py` | The 12 chess pieces, embedded (open-source cburnett set) |
-| `packages.txt` | Installs Stockfish when deploying on Streamlit Cloud |
-| `requirements.txt` | Python deps |
+| `backend/main.py` | FastAPI app: `/api/health`, `/api/position`, `/api/analyze` (SSE), `/api/icons/{name}` |
+| `backend/engine.py` | All chess analysis: SEE/sacrifice detection, move classification, critical moments |
+| `backend/coach.py` | Turns engine-verified facts into text (a single batched Gemini call per game) |
+| `backend/analysis_service.py` | Singleton Stockfish process wrapper + in-memory analysis cache |
+| `backend/config.py` | Resolves the Stockfish binary path and reads config from the environment |
+| `backend/openings.py` | ECO opening-name lookup |
+| `frontend/src/App.tsx` | Owns analysis state, wires the board/eval bar/eval graph/move list/coach panel together |
+| `frontend/src/api/client.ts` | Typed fetch wrappers for the backend API, including SSE parsing |
+| `frontend/src/components/` | Presentational board, move list, eval bar/graph, and coach panel |
 
-Run locally: `streamlit run app.py`
-
----
-
-## How each of your five requests was addressed
-
-**1. Coach comments that don't hallucinate.**
-The old design sent Gemini only `{move, eval, classification}`. With no idea what
-was on the board, it invented plausible-but-false reasons ("the rook is attacked").
-Now `engine.py` computes every fact from python-chess + Stockfish first — the
-engine's preferred move, what is *actually* hanging (verified with a static
+### Why Gemini can't hallucinate
+`backend/engine.py` computes every fact from `python-chess` + Stockfish first —
+the engine's preferred move, what is *actually* hanging (verified with a static
 exchange evaluation), whether the move was a capture/check/castle, and the
 opponent's concrete refutation. Gemini receives only those verified facts and is
-instructed to *rephrase* them and invent nothing. It literally cannot say a piece
-is hanging unless the engine confirmed it is. Example output on a real blunder:
-*"It leaves your pawn on f7 undefended. The opponent can answer with Qxf7#. g6 was stronger."*
+instructed to rephrase them, never invent new ones; `backend/coach.py` validates
+the response only uses vocabulary drawn from those facts. Only "notable" moves
+(blunders, mistakes, brilliancies, misses, etc.) are sent to Gemini, batched into
+a single request per game, and cached — reopening a game costs zero calls.
 
-**2. Removed the "Show Full Move List" bar.**
-Gone. In its place is an integrated, chess.com-style move list in the review panel
-with per-move classification badges and the current move highlighted.
+## Local development
 
-**3. Real-time analysis of variations / different lines.**
-There's a **Live Variation Explorer**. From any position in the game, branch off
-and play whatever moves you like — click the engine's top suggestions or pick any
-legal move — and Stockfish re-analyzes *live*, showing the new evaluation, the top
-lines, and a best-move arrow. Undo or reset back to the game at any time.
+```bash
+# Backend (terminal 1)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn backend.main:app --reload   # http://127.0.0.1:8000
 
-**4. Keep Gemini usage tiny (free tier).**
-Ordinary moves get truthful, locally-generated comments with **no API call**.
-Only "notable" moves (blunders, mistakes, brilliancies, etc.) are sent to Gemini,
-batched into **a single request per game**, and the result is cached — reopening a
-game costs zero calls. The variation explorer never calls Gemini at all. If the key
-is missing or a call fails, the app falls back to the built-in templates instead of
-breaking.
-
-**5. Looks like chess.com.**
-Green board (`#EBECD0` / `#779556`), an evaluation bar, move badges, a coach speech
-bubble, an evaluation graph, and clean pieces. The pieces are the open-source
-**cburnett** set (by Colin M.L. Burnett, via Wikimedia; BSD/GPL/GFDL) — deliberately
-*not* chess.com's proprietary artwork, but very close in clarity. They're embedded
-directly in `pieces.py`, so nothing loads from an external image host.
-
----
-
-## Setup
-
-### Stockfish
-- **Locally:** put your Stockfish binary next to `app.py`. On Windows name it
-  `stockfish.exe`; on macOS/Linux name it `stockfish`.
-- **Streamlit Community Cloud (Linux):** your local Windows/Mac binary will *not*
-  run there. The included `packages.txt` (containing `stockfish`) makes the platform
-  install a Linux build automatically — `app.py` finds it via `shutil.which`. (If you
-  prefer, commit a Linux x86-64 Stockfish binary instead.)
-
-### Gemini key
-Add your key to Streamlit secrets (`.streamlit/secrets.toml` locally, or the
-Secrets box in Streamlit Cloud):
-
-```toml
-GEMINI_API_KEY = "your-key-here"
+# Frontend (terminal 2)
+cd frontend
+npm install
+npm run dev                         # http://localhost:5173
 ```
 
-The app also reads `GEMINI_API_KEY` from the environment. Without a key it still
-works fully using the built-in comment templates.
+The Vite dev server proxies `/api` to `http://127.0.0.1:8000` (see
+`frontend/vite.config.ts`), so no extra frontend config is needed locally.
 
----
+### Stockfish
 
-## Notes / possible next steps
-- Analysis depth is set to 12 in `app.py` (`DEPTH`) — a good speed/quality balance
-  for the free tier. Raise it for stronger analysis at the cost of time.
-- Opening moves are labeled "Book" heuristically (first few moves, near-equal). If
-  you want true opening names, wire in a small opening database.
-- Promotions in the explorer auto-queen; a promotion picker could be added.
-- Board click-to-move was intentionally left out: on Streamlit it requires a full
-  page reload that wipes the analysis, so the explorer uses buttons/dropdowns, which
-  are reliable. A true click-to-move board would need a custom Streamlit component.
+The `stockfish` binary committed at the repo root via Git LFS is a **Linux**
+build (for cloud/Docker deployment) — it will not run on macOS or Windows.
+For local development, install Stockfish for your OS (e.g. `brew install
+stockfish` on macOS) and set `STOCKFISH_PATH` in `.env` to its location.
+`backend/config.py` resolution order: `STOCKFISH_PATH` env var → a binary
+named `stockfish`/`stockfish-ubuntu-x86-64`/`stockfish-linux` (or the
+`.exe` equivalents on Windows) at the repo root → `stockfish` on `PATH`.
+
+To pull the real Linux binary from Git LFS: `git lfs install --local && git lfs pull`.
+
+### Environment variables
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GEMINI_API_KEY` | Yes, for coaching | Gemini API key used by `backend/coach.py` |
+| `STOCKFISH_PATH` | No | Absolute path to a Stockfish binary, overrides auto-detection |
+| `ANALYSIS_DEPTH` | No | Default engine search depth (default `18`) |
+| `ALLOWED_ORIGINS` | No | Comma-separated list of origins the backend accepts CORS requests from (default `http://localhost:5173,http://127.0.0.1:5173`); use `*` to allow any origin |
+| `VITE_API_BASE_URL` | No | Set in the frontend build/env to point at a deployed backend URL instead of the relative `/api` dev-proxy path |
+
+## Deployment
+
+- **Frontend**: deploy `frontend/` to Vercel (set the project root to
+  `frontend/`; `frontend/vercel.json` handles the SPA rewrite). Set
+  `VITE_API_BASE_URL` to the deployed backend's URL.
+- **Backend**: containerize with `backend/Dockerfile` (build from the repo
+  root: `docker build -f backend/Dockerfile -t chess-backend .`) and deploy
+  to any container host. Set `GEMINI_API_KEY` and `ALLOWED_ORIGINS` (pointing
+  back at the deployed frontend origin) as environment variables on that host.
+
+## Possible next steps
+- Opening moves are labeled "Book" via `backend/openings.py`'s small ECO
+  lookup table — extend it for a fuller opening database.
+- No automated tests yet.
