@@ -90,7 +90,7 @@ def analyse_position(
         svc = AnalysisService.get()
         lines = svc.analyse_position(fen, depth=depth, multipv=multipv)
         return {"fen": fen, "depth": depth, "lines": lines}
-    except RuntimeError as exc:
+    except (RuntimeError, TimeoutError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -155,7 +155,7 @@ def analyze_game(req: AnalyzeRequest):
                 "player_color": req.player_color,
             }
             yield _sse_event("complete", result)
-        except ValueError as exc:
+        except (ValueError, TimeoutError) as exc:
             yield _sse_event("error", {"message": str(exc)})
         except Exception as exc:
             yield _sse_event("error", {"message": f"Analysis failed: {exc}"})

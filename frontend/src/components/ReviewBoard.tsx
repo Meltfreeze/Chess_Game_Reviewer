@@ -1,7 +1,36 @@
 import { Chessboard } from "react-chessboard";
-import type { Square } from "react-chessboard/dist/chessboard/types";
+import type { CustomPieces, Piece, Square } from "react-chessboard/dist/chessboard/types";
 import type { Classification } from "../types";
 import { iconUrl } from "../api/client";
+
+const PIECE_NAMES: Record<string, string> = {
+  P: "Pawn",
+  N: "Knight",
+  B: "Bishop",
+  R: "Rook",
+  Q: "Queen",
+  K: "King",
+};
+
+const CUSTOM_PIECES: CustomPieces = Object.fromEntries(
+  (["w", "b"] as const).flatMap((color) =>
+    Object.entries(PIECE_NAMES).map(([code, name]) => {
+      const pieceKey = `${color}${code}` as Piece;
+      const src = `/pieces/${color === "w" ? "White" : "Black"}-${name}.png`;
+      return [
+        pieceKey,
+        ({ squareWidth }: { squareWidth: number }) => (
+          <img
+            src={src}
+            alt={pieceKey}
+            draggable={false}
+            style={{ width: squareWidth * 0.85, height: squareWidth * 0.85 }}
+          />
+        ),
+      ];
+    })
+  )
+) as CustomPieces;
 
 const BADGE_COLORS: Record<string, string> = {
   Brilliant: "#1BADA6",
@@ -66,14 +95,16 @@ export default function ReviewBoard({
         boardWidth={boardWidth}
         customSquareStyles={customSquareStyles}
         customArrows={arrows}
+        customPieces={CUSTOM_PIECES}
         arePiecesDraggable={interactive}
         onPieceDrop={onPieceDrop}
         customBoardStyle={{
           borderRadius: 5,
           boxShadow: "0 8px 30px rgba(0,0,0,0.35)",
+          border: "10px solid #2D1A10",
         }}
-        customDarkSquareStyle={{ backgroundColor: "#779556" }}
-        customLightSquareStyle={{ backgroundColor: "#EBECD0" }}
+        customDarkSquareStyle={{ backgroundColor: "#B98763" }}
+        customLightSquareStyle={{ backgroundColor: "#EDD6B1" }}
       />
       {badge && badgeSquare && badgeColor && (
         <div

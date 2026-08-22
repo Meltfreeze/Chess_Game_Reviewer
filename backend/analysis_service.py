@@ -6,7 +6,12 @@ import threading
 
 import chess.engine
 
-from backend.config import get_engine_path, DEFAULT_DEPTH, MAX_DEPTH
+from backend.config import (
+    get_engine_path,
+    DEFAULT_DEPTH,
+    MAX_DEPTH,
+    ENGINE_LOCK_TIMEOUT_SECONDS,
+)
 
 
 class AnalysisService:
@@ -80,11 +85,17 @@ class AnalysisService:
         engine = self._ensure_engine()
         complete_payload = None
 
-        with self._lock:
+        if not self._lock.acquire(timeout=ENGINE_LOCK_TIMEOUT_SECONDS):
+            raise TimeoutError(
+                "Engine is busy analyzing another request. Please try again shortly."
+            )
+        try:
             for event_type, payload in analyze_game_streaming(pgn, engine, depth):
                 if event_type == "complete":
                     complete_payload = payload
                 yield event_type, payload
+        finally:
+            self._lock.release()
 
         if complete_payload:
             self.set_cached(pgn, depth, player_color, complete_payload)
@@ -94,8 +105,14 @@ class AnalysisService:
 
         depth = min(MAX_DEPTH, depth or DEFAULT_DEPTH)
         engine = self._ensure_engine()
-        with self._lock:
+        if not self._lock.acquire(timeout=ENGINE_LOCK_TIMEOUT_SECONDS):
+            raise TimeoutError(
+                "Engine is busy analyzing another request. Please try again shortly."
+            )
+        try:
             return analyse_fen(fen, engine, depth=depth, multipv=multipv)
+        finally:
+            self._lock.release()
 
     def shutdown(self):
         if self._engine:

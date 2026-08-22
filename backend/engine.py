@@ -8,6 +8,7 @@ import chess.pgn
 import chess.engine
 
 from backend.openings import lookup_opening, is_book_move
+from backend.config import ENGINE_TIME_LIMIT_SECONDS
 
 VALUES = {
     chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
@@ -315,7 +316,7 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
     }
 
     board = game.board()
-    limit = chess.engine.Limit(depth=depth)
+    limit = chess.engine.Limit(depth=depth, time=ENGINE_TIME_LIMIT_SECONDS)
     prev_info = engine.analyse(board, limit, multipv=2)
     prev_cp_white = _score_white_cp(prev_info[0])
 
@@ -333,10 +334,6 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         metadata["Opening"] = opening_name
 
     total_moves = sum(1 for _ in game.mainline())
-    game = chess.pgn.read_game(io.StringIO(pgn_str))
-    board = game.board()
-    prev_info = engine.analyse(board, limit, multipv=2)
-    prev_cp_white = _score_white_cp(prev_info[0])
 
     for game_node in game.mainline():
         move = game_node.move
@@ -462,7 +459,8 @@ def analyze_game(pgn_str, engine, depth=18):
 
 def analyse_fen(fen, engine, depth=18, multipv=3):
     board = chess.Board(fen)
-    infos = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=multipv)
+    limit = chess.engine.Limit(depth=depth, time=ENGINE_TIME_LIMIT_SECONDS)
+    infos = engine.analyse(board, limit, multipv=multipv)
 
     lines = []
     for info in infos:

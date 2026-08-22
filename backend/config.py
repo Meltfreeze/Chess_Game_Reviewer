@@ -7,6 +7,14 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "18"))
 MAX_DEPTH = 22
 
+# Hard cap (seconds) on a single Stockfish search, so a slow/pathological
+# position can never hang a request (or the shared engine lock) forever.
+ENGINE_TIME_LIMIT_SECONDS = float(os.environ.get("ENGINE_TIME_LIMIT_SECONDS", "10"))
+
+# Max time to wait to acquire the shared engine lock before failing fast
+# with a clear "busy" error instead of hanging silently.
+ENGINE_LOCK_TIMEOUT_SECONDS = float(os.environ.get("ENGINE_LOCK_TIMEOUT_SECONDS", "45"))
+
 
 def get_engine_path():
     env_path = os.environ.get("STOCKFISH_PATH")
