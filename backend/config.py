@@ -4,7 +4,7 @@ import shutil
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DEFAULT_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "18"))
+DEFAULT_DEPTH = int(os.environ.get("ANALYSIS_DEPTH", "14"))
 MAX_DEPTH = 22
 
 # Hard cap (seconds) on a single Stockfish search, so a slow/pathological

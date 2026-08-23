@@ -1,23 +1,9 @@
-import type { AnalysisResult, EngineLine, HealthInfo } from "../types";
+import type { AnalysisResult, HealthInfo } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 export async function fetchHealth(): Promise<HealthInfo> {
   const res = await fetch(`${API_BASE}/api/health`);
-  return res.json();
-}
-
-export async function fetchPosition(
-  fen: string,
-  depth = 18,
-  multipv = 3
-): Promise<{ lines: EngineLine[] }> {
-  const params = new URLSearchParams({ fen, depth: String(depth), multipv: String(multipv) });
-  const res = await fetch(`${API_BASE}/api/position?${params}`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || "Position analysis failed");
-  }
   return res.json();
 }
 
@@ -42,7 +28,7 @@ export interface AnalyzeOptions {
 }
 
 export async function analyzeGame(options: AnalyzeOptions): Promise<AnalysisResult> {
-  const { pgn, playerColor, depth = 18, onProgress } = options;
+  const { pgn, playerColor, depth = 14, onProgress } = options;
 
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: "POST",

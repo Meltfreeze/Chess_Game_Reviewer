@@ -11,7 +11,7 @@ interface AnalyzeFormProps {
 export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFormProps) {
   const [pgn, setPgn] = useState("");
   const [playerColor, setPlayerColor] = useState<"White" | "Black">("White");
-  const [depth, setDepth] = useState(18);
+  const [depth, setDepth] = useState(14);
   const [health, setHealth] = useState<HealthInfo | null>(null);
 
   useEffect(() => {
