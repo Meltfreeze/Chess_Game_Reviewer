@@ -69,7 +69,7 @@ To pull the real Linux binary from Git LFS: `git lfs install --local && git lfs 
 |----------|----------|---------|
 | `GEMINI_API_KEY` | Yes, for coaching | Gemini API key used by `backend/coach.py` |
 | `STOCKFISH_PATH` | No | Absolute path to a Stockfish binary, overrides auto-detection |
-| `ANALYSIS_DEPTH` | No | Default engine search depth (default `18`) |
+| `ANALYSIS_DEPTH` | No | Default engine search depth (default `14`) |
 | `ALLOWED_ORIGINS` | No | Comma-separated list of origins the backend accepts CORS requests from (default `http://localhost:5173,http://127.0.0.1:5173`); use `*` to allow any origin |
 | `VITE_API_BASE_URL` | No | Set in the frontend build/env to point at a deployed backend URL instead of the relative `/api` dev-proxy path |
 
