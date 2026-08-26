@@ -58,7 +58,10 @@ export default function App() {
       {result && (
         <div className="flex flex-wrap gap-6">
           <div className="flex gap-3">
-            <EvalBar evalCpWhite={currentMove ? currentMove.eval_cp_white : 0} />
+            <EvalBar
+              evalCpWhite={currentMove ? currentMove.eval_cp_white : 0}
+              evalText={currentMove?.eval}
+            />
             <ReviewBoard
               fen={fen}
               flipped={playerColor === "Black"}
