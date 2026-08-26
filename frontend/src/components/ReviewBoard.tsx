@@ -24,7 +24,7 @@ const CUSTOM_PIECES: CustomPieces = Object.fromEntries(
             src={src}
             alt={pieceKey}
             draggable={false}
-            style={{ width: squareWidth * 0.85, height: squareWidth * 0.85 }}
+            style={{ width: squareWidth, height: squareWidth }}
           />
         ),
       ];
