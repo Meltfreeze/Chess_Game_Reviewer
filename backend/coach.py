@@ -59,9 +59,18 @@ def template_comment(move):
 
 _SYSTEM = (
     "You are a warm, concise chess coach. You are given engine-VERIFIED facts "
-    "about chess moves. Write ONE short, plain-English sentence for each move, "
-    "using ONLY the given facts. Never invent threats, attacks, piece names, or "
-    "squares that are not in the facts. No jargon dumps. Output strict JSON only."
+    "about chess moves. Write plain-English commentary using ONLY those facts. "
+    "Never invent threats, attacks, piece names, or squares that are not in the "
+    "facts; name a move by the exact notation given (e.g. Nf3) rather than a piece "
+    "type the facts do not name. No jargon dumps. Output strict JSON only.\n"
+    "Blunder/Mistake/Inaccuracy/Miss/Great/Brilliant: say what happened and briefly "
+    "why, citing the fact that explains it (hanging piece, opponent's reply, missed "
+    "capture, the move the engine preferred, whether it was a capture). "
+    "Max 2 sentences.\n"
+    "Good/Best/Excellent/Book: exactly one plain sentence, no reasoning.\n"
+    "Never open or pad a comment with the game phase ('in the opening', 'in the "
+    "middlegame', 'in the endgame') — mention phase only when it is essential to "
+    "the point being made."
 )
 
 
@@ -145,16 +154,19 @@ def generate_coach(move_data, player_color, gemini_client, critical_moments=None
     brief = _select_brief(move_data, notable)
     summary = _fallback_summary(move_data, player_color)
 
-    payload_notable = [{"id": i, "facts": move_data[i]["prompt_str"]} for i in notable]
-    payload_brief = [{"id": i, "facts": move_data[i]["prompt_str"]} for i in brief]
+    payload_notable = [{"id": i, "classification": move_data[i]["classification"],
+                        "facts": move_data[i]["prompt_str"]} for i in notable]
+    payload_brief = [{"id": i, "classification": move_data[i]["classification"],
+                      "facts": move_data[i]["prompt_str"]} for i in brief]
 
     prompt = (
         f"Player under review: {player_color}. Return JSON with:\n"
         '{"summary": "<1-2 sentence game overview>", '
-        '"comments": {"<move_id>": "<one friendly sentence>"}, '
+        '"comments": {"<move_id>": "<friendly comment, 1-2 sentences>"}, '
         '"brief": {"<move_id>": "<short one-liner>"}}\n'
         f"Use comments for key moves ({len(payload_notable)} moves) and brief for "
-        f"routine moves ({len(payload_brief)} moves). Use ONLY provided facts.\n\n"
+        f"routine moves ({len(payload_brief)} moves). Key moves need a brief why; "
+        f"routine moves need one line. Use ONLY provided facts.\n\n"
         f"KEY MOVES: {json.dumps(payload_notable)}\n"
         f"ROUTINE MOVES: {json.dumps(payload_brief)}"
     )
