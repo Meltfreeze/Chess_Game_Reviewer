@@ -49,6 +49,7 @@ export interface MoveData {
 export interface PlayerStats {
   rating: number;
   acpl: number;
+  accuracy: number;
 }
 
 export interface GameMeta {

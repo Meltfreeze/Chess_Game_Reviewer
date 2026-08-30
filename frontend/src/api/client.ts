@@ -11,10 +11,6 @@ export function iconUrl(classification: string): string {
   return `${API_BASE}/api/icons/${classification}`;
 }
 
-export function accuracyFromAcpl(acpl: number): number {
-  return Math.round(Math.max(10, Math.min(99, 100 * 0.98 ** acpl)));
-}
-
 export function cpToWinPercent(cp: number): number {
   const clamped = Math.max(-10000, Math.min(10000, cp));
   return 1 / (1 + 10 ** (-clamped / 400));

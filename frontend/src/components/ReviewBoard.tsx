@@ -2,6 +2,7 @@ import { Chessboard } from "react-chessboard";
 import type { CustomPieces, Piece, Square } from "react-chessboard/dist/chessboard/types";
 import type { Classification } from "../types";
 import { iconUrl } from "../api/client";
+import { BADGE_COLORS } from "../constants";
 
 const PIECE_NAMES: Record<string, string> = {
   P: "Pawn",
@@ -31,19 +32,6 @@ const CUSTOM_PIECES: CustomPieces = Object.fromEntries(
     })
   )
 ) as CustomPieces;
-
-const BADGE_COLORS: Record<string, string> = {
-  Brilliant: "#1BADA6",
-  Great: "#5C8BB0",
-  Best: "#95BB4A",
-  Excellent: "#95BB4A",
-  Good: "#96AF8B",
-  Book: "#A88865",
-  Inaccuracy: "#F0C15C",
-  Miss: "#EE6B55",
-  Mistake: "#E58F2A",
-  Blunder: "#CA3431",
-};
 
 interface ReviewBoardProps {
   fen: string;

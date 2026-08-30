@@ -1,18 +1,6 @@
 import type { Classification } from "../types";
 import { iconUrl } from "../api/client";
-
-const BADGE_COLORS: Record<string, string> = {
-  Brilliant: "#1BADA6",
-  Great: "#5C8BB0",
-  Best: "#95BB4A",
-  Excellent: "#95BB4A",
-  Good: "#96AF8B",
-  Book: "#A88865",
-  Inaccuracy: "#F0C15C",
-  Miss: "#EE6B55",
-  Mistake: "#E58F2A",
-  Blunder: "#CA3431",
-};
+import { BADGE_COLORS } from "../constants";
 
 interface CoachPanelProps {
   summary: string;

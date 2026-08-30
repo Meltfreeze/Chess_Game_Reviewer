@@ -22,7 +22,7 @@ body {
   transition: height 0.25s ease;
 }
 
-.move-list-scroll {
+.panel-scroll {
   scrollbar-color: #5c5a57 #302e2b;
   scrollbar-width: thin;
 }

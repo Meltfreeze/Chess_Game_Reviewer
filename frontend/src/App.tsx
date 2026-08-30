@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
 import AnalyzeForm from "./components/AnalyzeForm";
 import ReviewBoard from "./components/ReviewBoard";
-import MoveList from "./components/MoveList";
 import EvalBar from "./components/EvalBar";
-import EvalGraph from "./components/EvalGraph";
-import CoachPanel from "./components/CoachPanel";
+import ReviewSidebar from "./components/ReviewSidebar";
 import { analyzeGame } from "./api/client";
 import type { AnalysisResult } from "./types";
 
@@ -93,14 +91,14 @@ export default function App() {
             />
           </div>
 
-          <div className="flex-1 min-w-[360px] flex flex-col gap-4">
-            <EvalGraph history={result.hist} currentPly={historyIndex} onSelect={setHistoryIndex} />
-            <MoveList moves={result.move_data} currentPly={historyIndex} onSelect={setHistoryIndex} />
-            <CoachPanel
-              summary={result.coach.summary}
+          <div className="flex-1 min-w-[360px]">
+            <ReviewSidebar
+              result={result}
+              currentPly={historyIndex}
+              currentMove={currentMove}
               comment={comment}
-              classification={currentMove?.classification ?? null}
-              bestLine={currentMove?.best_line}
+              onSelect={setHistoryIndex}
+              height={boardSize}
             />
           </div>
         </div>

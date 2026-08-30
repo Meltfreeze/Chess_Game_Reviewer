@@ -18,7 +18,7 @@ export default function MoveList({ moves, currentPly, onSelect }: MoveListProps)
   }
 
   return (
-    <div className="move-list-scroll max-h-56 overflow-y-auto bg-panel rounded-md p-2 text-sm">
+    <div className="text-base">
       <table className="w-full border-collapse">
         <tbody>
           {rows.map(({ num, white, black }) => (
@@ -58,7 +58,7 @@ function MoveCell({
         }`}
       >
         <span>{move.san}</span>
-        <img src={iconUrl(move.classification)} alt={move.classification} className="w-4 h-4" />
+        <img src={iconUrl(move.classification)} alt={move.classification} className="w-5 h-5" />
       </button>
     </td>
   );
