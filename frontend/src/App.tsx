@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import AnalyzeForm from "./components/AnalyzeForm";
 import ReviewBoard from "./components/ReviewBoard";
 import MoveList from "./components/MoveList";
@@ -10,6 +10,18 @@ import type { AnalysisResult } from "./types";
 
 const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
+const HEIGHT_RATIO = 0.98;
+const EVAL_GROUP = 26 + 12; // eval bar width + gap-3 to the board
+const H_CHROME = 48 + 24; // container padding (p-6) + row gap (gap-6)
+const PANEL_MIN = 360; // don't shrink the moves/comment column below this
+
+function computeBoardSize(): number {
+  if (typeof window === "undefined") return 520;
+  const byHeight = Math.floor(window.innerHeight * HEIGHT_RATIO);
+  const byWidth = window.innerWidth - H_CHROME - EVAL_GROUP - PANEL_MIN;
+  return Math.max(320, Math.min(byHeight, byWidth));
+}
+
 export default function App() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<{ ply: number; total: number } | null>(null);
@@ -17,6 +29,13 @@ export default function App() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [playerColor, setPlayerColor] = useState<"White" | "Black">("White");
   const [historyIndex, setHistoryIndex] = useState(0);
+  const [boardSize, setBoardSize] = useState(computeBoardSize);
+
+  useEffect(() => {
+    const onResize = () => setBoardSize(computeBoardSize());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const handleAnalyze = async (pgn: string, color: "White" | "Black", depth: number) => {
     setLoading(true);
@@ -44,7 +63,7 @@ export default function App() {
   const comment = currentMove ? result!.coach.comments[historyIndex - 1] ?? "" : "";
 
   return (
-    <div className="max-w-6xl mx-auto p-6">
+    <div className="w-full p-6">
       <h1 className="text-2xl font-bold mb-4">Chess Game Review</h1>
 
       <AnalyzeForm onAnalyze={handleAnalyze} loading={loading} progress={progress} />
@@ -56,14 +75,16 @@ export default function App() {
       )}
 
       {result && (
-        <div className="flex flex-wrap gap-6">
-          <div className="flex gap-3">
+        <div className="flex flex-wrap gap-6 items-start">
+          <div className="flex gap-3 shrink-0">
             <EvalBar
               evalCpWhite={currentMove ? currentMove.eval_cp_white : 0}
               evalText={currentMove?.eval}
+              height={boardSize}
             />
             <ReviewBoard
               fen={fen}
+              boardWidth={boardSize}
               flipped={playerColor === "Black"}
               lastMoveUci={currentMove?.uci ?? null}
               arrowUci={currentMove?.best_uci ?? null}
@@ -72,7 +93,7 @@ export default function App() {
             />
           </div>
 
-          <div className="flex-1 min-w-[280px] flex flex-col gap-4">
+          <div className="flex-1 min-w-[360px] flex flex-col gap-4">
             <EvalGraph history={result.hist} currentPly={historyIndex} onSelect={setHistoryIndex} />
             <MoveList moves={result.move_data} currentPly={historyIndex} onSelect={setHistoryIndex} />
             <CoachPanel

@@ -101,7 +101,6 @@ export default function ReviewBoard({
         customBoardStyle={{
           borderRadius: 5,
           boxShadow: "0 8px 30px rgba(0,0,0,0.35)",
-          border: "10px solid #2D1A10",
         }}
         customDarkSquareStyle={{ backgroundColor: "#B98763" }}
         customLightSquareStyle={{ backgroundColor: "#EDD6B1" }}
