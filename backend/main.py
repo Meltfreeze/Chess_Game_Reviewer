@@ -174,7 +174,7 @@ def icon(name: str):
         "Excellent": "Excellent.png",
         "Good": "Good.png",
         "Book": "Book.png",
-        "Inaccuracy": "Inaccuracy.png",
+        "Inaccuracy": "Inaccuracy.PNG",
         "Miss": "Miss.png",
         "Mistake": "Mistake.png",
         "Blunder": "Blunder.png",
