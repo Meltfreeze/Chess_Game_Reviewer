@@ -138,7 +138,7 @@ def _select_brief(move_data, notable_idxs):
 
 
 def generate_coach(move_data, player_color, gemini_client, critical_moments=None,
-                   model="gemini-3-flash", _cache=None):
+                   model="gemini-3-flash-preview", _cache=None):
     if _cache is None:
         _cache = {}
 
