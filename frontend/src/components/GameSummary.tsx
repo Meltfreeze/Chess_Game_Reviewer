@@ -72,7 +72,7 @@ export function RatingFooter({ result }: { result: AnalysisResult }) {
   return (
     <div className={`${ROW_GRID} border-t border-panelBorder pt-3 text-base`}>
       <span className="text-[#b9b7b4] leading-tight">
-        Estimated Rating
+        Estimated
         <br />
         Performance
       </span>
