@@ -10,7 +10,7 @@ const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 const HEIGHT_RATIO = 0.98;
 const EVAL_GROUP = 26 + 12; // eval bar width + gap-3 to the board
-const H_CHROME = 48 + 24; // container padding (p-6) + row gap (gap-6)
+const H_CHROME = 28 + 24; // container padding (p-6) + row gap (gap-6)
 const PANEL_MIN = 360; // don't shrink the moves/comment column below this
 
 function computeBoardSize(): number {
@@ -61,7 +61,7 @@ export default function App() {
   const comment = currentMove ? result!.coach.comments[historyIndex - 1] ?? "" : "";
 
   return (
-    <div className="w-full p-6">
+    <div className="w-full pt-6 px-6 pb-1">
       <h1 className="text-2xl font-bold mb-4">Chess Game Review</h1>
 
       <AnalyzeForm onAnalyze={handleAnalyze} loading={loading} progress={progress} />
