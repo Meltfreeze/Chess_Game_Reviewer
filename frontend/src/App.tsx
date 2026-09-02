@@ -27,9 +27,10 @@ export default function App() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [playerColor, setPlayerColor] = useState<"White" | "Black">("White");
   const [historyIndex, setHistoryIndex] = useState(0);
-  const [boardSize, setBoardSize] = useState(computeBoardSize);
-
-  useEffect(() => {
+  const [boardSize, setBoardSize] = useState(520);
+  
+  useEffect(() => { 
+    setBoardSize(computeBoardSize());
     const onResize = () => setBoardSize(computeBoardSize());
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
