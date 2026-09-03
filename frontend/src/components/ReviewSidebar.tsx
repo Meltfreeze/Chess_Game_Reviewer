@@ -14,7 +14,6 @@ interface ReviewSidebarProps {
   currentMove: MoveData | null;
   comment: string;
   onSelect: (ply: number) => void;
-  height: number;
 }
 
 export default function ReviewSidebar({
@@ -23,16 +22,11 @@ export default function ReviewSidebar({
   currentMove,
   comment,
   onSelect,
-  height,
 }: ReviewSidebarProps) {
   const [tab, setTab] = useState<Tab>("review");
 
   return (
-    <div
-      className="bg-panel border border-panelBorder rounded-xl flex flex-col overflow-hidden"
-      style={{ height }}
-    >
-      {/* Coach comment and graph stay visible in both tabs — both track the selected move. */}
+    <div className="h-full bg-panel border border-panelBorder rounded-xl flex flex-col overflow-hidden">
       <div className="shrink-0 p-3 pb-0">
         <CoachPanel
           summary={result.coach.summary}

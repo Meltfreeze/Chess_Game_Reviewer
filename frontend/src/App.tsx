@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import AnalyzeForm from "./components/AnalyzeForm";
 import ReviewBoard from "./components/ReviewBoard";
 import EvalBar from "./components/EvalBar";
+import MoveNav from "./components/MoveNav";
 import ReviewSidebar from "./components/ReviewSidebar";
 import { analyzeGame } from "./api/client";
 import type { AnalysisResult } from "./types";
@@ -29,12 +30,39 @@ export default function App() {
   const [historyIndex, setHistoryIndex] = useState(0);
   const [boardSize, setBoardSize] = useState(520);
   
-  useEffect(() => { 
+  useEffect(() => {
     setBoardSize(computeBoardSize());
     const onResize = () => setBoardSize(computeBoardSize());
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  useEffect(() => {
+    if (!result) return;
+    const total = result.move_data.length;
+    const jumps: Record<string, (ply: number) => number> = {
+      ArrowLeft: (ply) => Math.max(0, ply - 1),
+      ArrowRight: (ply) => Math.min(total, ply + 1),
+      ArrowUp: () => total,
+      ArrowDown: () => 0,
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) {
+        return;
+      }
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+
+      const jump = jumps[event.key];
+      if (!jump) return;
+      event.preventDefault(); 
+      setHistoryIndex(jump);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [result]);
 
   const handleAnalyze = async (pgn: string, color: "White" | "Black", depth: number) => {
     setLoading(true);
@@ -92,15 +120,24 @@ export default function App() {
             />
           </div>
 
-          <div className="flex-1 min-w-[360px]">
-            <ReviewSidebar
-              result={result}
+          <div
+            className="flex-1 min-w-[360px] flex flex-col gap-3"
+            style={{ height: boardSize }}
+          >
+            <MoveNav
               currentPly={historyIndex}
-              currentMove={currentMove}
-              comment={comment}
+              totalPlies={result.move_data.length}
               onSelect={setHistoryIndex}
-              height={boardSize}
             />
+            <div className="flex-1 min-h-0">
+              <ReviewSidebar
+                result={result}
+                currentPly={historyIndex}
+                currentMove={currentMove}
+                comment={comment}
+                onSelect={setHistoryIndex}
+              />
+            </div>
           </div>
         </div>
       )}

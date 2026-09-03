@@ -3,14 +3,14 @@ import { fetchHealth } from "../api/client";
 import type { HealthInfo } from "../types";
 
 interface AnalyzeFormProps {
-  onAnalyze: (pgn: string, playerColor: "White" | "Black", depth: number) => void;
+  onAnalyze: (pgn: string, playerColor: PlayerColor, depth: number) => void;
   loading: boolean;
   progress?: { ply: number; total: number } | null;
 }
 
 export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFormProps) {
   const [pgn, setPgn] = useState("");
-  const [playerColor, setPlayerColor] = useState<"White" | "Black">("White");
+  const [playerColor, setPlayerColor] = useState<PlayerColor>("White");
   const [depth, setDepth] = useState(14);
   const [health, setHealth] = useState<HealthInfo | null>(null);
 
@@ -24,23 +24,8 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
     <div className="bg-panel rounded-xl p-5 mb-6 border border-panelBorder">
       <h2 className="text-xl font-bold mb-4">Analyze a new game</h2>
 
-      <div className="flex flex-wrap gap-4 mb-3 text-sm">
-        <label className="flex items-center gap-2">
-          <input
-            type="radio"
-            checked={playerColor === "White"}
-            onChange={() => setPlayerColor("White")}
-          />
-          White
-        </label>
-        <label className="flex items-center gap-2">
-          <input
-            type="radio"
-            checked={playerColor === "Black"}
-            onChange={() => setPlayerColor("Black")}
-          />
-          Black
-        </label>
+      <div className="flex flex-wrap items-center gap-4 mb-3 text-sm">
+        <ColorToggle value={playerColor} onChange={setPlayerColor} />
         <label className="flex items-center gap-2 ml-auto">
           Depth
           <select
@@ -100,5 +85,64 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
           : "Review Game"}
       </button>
     </div>
+  );
+}
+
+type PlayerColor = "White" | "Black";
+
+function ColorToggle({
+  value,
+  onChange,
+}: {
+  value: PlayerColor;
+  onChange: (color: PlayerColor) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Side you played"
+      className="relative flex w-56 p-1 rounded-lg bg-[#21201d] border border-panelBorder"
+    >
+      <span
+        aria-hidden
+        className="absolute top-1 bottom-1 left-1 w-[calc(50%-0.25rem)] rounded-md bg-panelBorder transition-transform duration-200 ease-out"
+        style={{ transform: value === "Black" ? "translateX(100%)" : "none" }}
+      />
+      <ColorOption color="White" value={value} onChange={onChange} />
+      <ColorOption color="Black" value={value} onChange={onChange} />
+    </div>
+  );
+}
+
+function ColorOption({
+  color,
+  value,
+  onChange,
+}: {
+  color: PlayerColor;
+  value: PlayerColor;
+  onChange: (color: PlayerColor) => void;
+}) {
+  const active = value === color;
+  return (
+    <label
+      className={`relative z-10 flex-1 flex items-center justify-center gap-2 py-1.5 rounded-md font-semibold cursor-pointer transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent ${
+        active ? "text-white" : "text-[#8b8987] hover:text-[#e8e8e8]"
+      }`}
+    >
+      <input
+        type="radio"
+        name="player-color"
+        className="sr-only"
+        checked={active}
+        onChange={() => onChange(color)}
+      />
+      <span
+        className={`w-3.5 h-3.5 rounded-full border ${
+          color === "White" ? "bg-[#f5f5f0] border-[#d8d7d2]" : "bg-[#1a1917] border-[#5c5a57]"
+        }`}
+      />
+      {color}
+    </label>
   );
 }
