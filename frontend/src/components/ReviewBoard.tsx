@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import type { CustomPieces, Piece, Square } from "react-chessboard/dist/chessboard/types";
@@ -11,6 +11,29 @@ const ANIMATION_MS = 180;
 
 const LAST_MOVE_FROM = "rgba(246, 246, 105, 0.72)";
 const LAST_MOVE_TO = "rgba(186, 202, 43, 0.72)";
+
+/**
+ * A selected piece's own square, tinted the same colour a played move's landing
+ * square gets, so selection reads as "live" and — per the spec — wins over a
+ * last-move highlight when the two coincide.
+ */
+const SELECTED_SQUARE_BG = LAST_MOVE_TO;
+
+/**
+ * Legal-move hints, painted through customSquareStyles (the board's existing
+ * overlay channel) as backgroundImage. That layers them over the last-move /
+ * selection backgroundColor without disturbing its fade — the square's only
+ * transition is on background-color — so hints snap in the instant a piece is
+ * selected.
+ *
+ *  - dot  : a quiet move, a small grey disc centred on an empty square.
+ *  - ring : a capture, a grey annulus reaching the square's four edges that
+ *           frames the enemy piece (the piece is the square's child, on top).
+ */
+const LEGAL_DOT =
+  "radial-gradient(circle at center, rgba(0, 0, 0, 0.16) 20%, transparent 21%)";
+const LEGAL_RING =
+  "radial-gradient(circle closest-side at center, transparent 79%, rgba(0, 0, 0, 0.16) 80%, rgba(0, 0, 0, 0.16) 99%, transparent 100%)";
 
 const PIECE_NAMES: Record<string, string> = {
   P: "Pawn",
@@ -100,6 +123,12 @@ export default function ReviewBoard({
   const arrow = parseUci(arrowUci);
   const [fromSquare, toSquare] = last ?? [null, null];
 
+  // Selection is board-local UI state. It must drop the moment the shown
+  // position changes from outside — arrows, the sidebar, the nav buttons — and
+  // a move played here changes `fen` too, so this covers "the move completes".
+  const [selected, setSelected] = useState<Square | null>(null);
+  useEffect(() => setSelected(null), [fen]);
+
   // Worked out during render rather than in an effect: the board reads
   // animationDuration inside its own position effect, and child effects run
   // first, so anything set from here afterwards would arrive a move too late.
@@ -128,29 +157,56 @@ export default function ReviewBoard({
   const customPieces = useMemo(() => buildPieces(fading), [fading?.square, fading?.piece]);
 
   /**
+   * Squares the selected piece may legally reach, tagged for how each draws: an
+   * occupied destination is a capture (ring), an empty one a quiet move (dot).
+   * En passant lands on an empty square, so it reads as a dot — matching the
+   * reference. Generation runs on the current position, so this is identical on
+   * the main line and inside an off-book branch. null means nothing selected.
+   */
+  const legalTargets = useMemo(() => {
+    if (!selected) return null;
+    try {
+      const chess = new Chess(fen);
+      const targets: Record<string, "dot" | "ring"> = {};
+      for (const move of chess.moves({ square: selected, verbose: true })) {
+        targets[move.to] = chess.get(move.to) ? "ring" : "dot";
+      }
+      return targets;
+    } catch {
+      return {};
+    }
+  }, [selected, fen]);
+
+  /**
    * All 64 squares carry a colour and a transition, not just the highlighted
    * two. customSquareStyles renders onto an inner div that is only styled while
    * the map holds an entry for it, so dropping a square would cut its outgoing
-   * highlight instead of fading it.
+   * highlight instead of fading it. Legal-move hints ride on backgroundImage so
+   * they layer over the tint and appear without the background-color fade.
    */
   const customSquareStyles = useMemo(() => {
     const styles: Record<string, React.CSSProperties> = {};
     for (const file of "abcdefgh") {
       for (let rank = 1; rank <= 8; rank += 1) {
         const square = `${file}${rank}`;
+        const hint = legalTargets?.[square];
         styles[square] = {
+          // Selection wins over the last-move tint on a shared square.
           backgroundColor:
-            square === fromSquare
-              ? LAST_MOVE_FROM
-              : square === toSquare
-                ? LAST_MOVE_TO
-                : "transparent",
+            square === selected
+              ? SELECTED_SQUARE_BG
+              : square === fromSquare
+                ? LAST_MOVE_FROM
+                : square === toSquare
+                  ? LAST_MOVE_TO
+                  : "transparent",
+          backgroundImage: hint === "ring" ? LEGAL_RING : hint === "dot" ? LEGAL_DOT : "none",
           transition: `background-color ${ANIMATION_MS}ms ease-out`,
         };
       }
     }
     return styles;
-  }, [fromSquare, toSquare]);
+  }, [fromSquare, toSquare, selected, legalTargets]);
 
   const arrows = arrow
     ? [[arrow[0], arrow[1], "rgba(17, 119, 45, 0.75)"] as [Square, Square, string]]
@@ -158,6 +214,39 @@ export default function ReviewBoard({
 
   const badgeSquare = last?.[1];
   const badgeColor = badge ? BADGE_COLORS[badge] : undefined;
+
+  // Only the side to move can be picked up — the enemy's pieces generate no
+  // legal moves from this position, so selecting them would just show a bare
+  // green square. chess.js's own turn is the source of truth via the FEN.
+  const sideToMove = fen.split(" ")[1] === "b" ? "b" : "w";
+  const isOwnPiece = (piece?: Piece) => !!piece && piece[0] === sideToMove;
+
+  const handleSquareClick = (square: Square, piece?: Piece) => {
+    if (!interactive) return;
+    if (selected) {
+      if (square === selected) {
+        setSelected(null); // same piece again → toggle the selection off
+      } else if (legalTargets?.[square]) {
+        onPieceDrop?.(selected, square); // click-to-move; the position change clears the rest
+        setSelected(null);
+      } else if (isOwnPiece(piece)) {
+        setSelected(square); // straight to another of our pieces
+      } else {
+        setSelected(null); // empty or enemy non-target → just deselect
+      }
+      return;
+    }
+    if (isOwnPiece(piece)) setSelected(square);
+  };
+
+  const handleDragBegin = (piece: Piece, sourceSquare: Square) => {
+    if (interactive && isOwnPiece(piece)) setSelected(sourceSquare);
+  };
+
+  // A drag always ends the selection: a landed move changes `fen` (which clears
+  // it regardless), while a snapback or a drop back on the origin leaves the
+  // board unchanged and nothing selected.
+  const handleDragEnd = () => setSelected(null);
 
   return (
     <div className="relative" style={{ width: boardWidth }}>
@@ -173,6 +262,9 @@ export default function ReviewBoard({
         arePiecesDraggable={interactive}
         autoPromoteToQueen
         onPieceDrop={onPieceDrop}
+        onSquareClick={handleSquareClick}
+        onPieceDragBegin={handleDragBegin}
+        onPieceDragEnd={handleDragEnd}
         customBoardStyle={{
           borderRadius: 5,
           boxShadow: "0 8px 30px rgba(0,0,0,0.35)",
