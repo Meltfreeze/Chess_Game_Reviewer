@@ -206,6 +206,58 @@ def generate_coach(move_data, player_color, gemini_client, critical_moments=None
     return result
 
 
+def _move_key(move):
+    h = hashlib.sha1()
+    h.update(f'{move["fen_before"]}{move["uci"]}{move["classification"]}'.encode())
+    return h.hexdigest()
+
+
+def generate_move_comment(move, gemini_client, model="gemini-2.5-flash", _cache=None):
+    """Coach a single move — the single-move counterpart to generate_coach.
+
+    generate_coach batches a whole game into one Gemini call and keys its cache
+    on the full move list, so it cannot comment on a move that was not part of
+    the reviewed game. This takes one entry from engine.analyze_move and runs it
+    through the same system prompt and fact validation. Falls back to
+    template_comment on any Gemini failure (missing key, rate limit, bad JSON)
+    so exploring the board never breaks on the free tier.
+    """
+    if _cache is None:
+        _cache = {}
+
+    key = _move_key(move)
+    if key in _cache:
+        return _cache[key]
+
+    comment = template_comment(move)
+
+    if gemini_client is not None:
+        prompt = (
+            'Return JSON with: {"comment": "<friendly comment>"}\n'
+            f'Classification: {move["classification"]}\n'
+            f'Facts: {move["prompt_str"]}'
+        )
+        try:
+            from google import genai
+            resp = gemini_client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=_SYSTEM,
+                    response_mime_type="application/json",
+                    temperature=0.3,
+                ),
+            )
+            candidate = json.loads(resp.text.strip()).get("comment")
+            if _validate_comment(candidate, move["prompt_str"]):
+                comment = candidate
+        except Exception:
+            pass
+
+    _cache[key] = comment
+    return comment
+
+
 def _fallback_summary(move_data, player_color):
     mine = [m for m in move_data if m["turn"] == player_color]
     blunders = sum(1 for m in mine if m["classification"] == "Blunder")

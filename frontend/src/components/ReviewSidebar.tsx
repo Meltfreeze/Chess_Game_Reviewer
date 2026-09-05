@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import type { AnalysisResult, MoveData } from "../types";
+import type { AnalysisResult } from "../types";
+import { currentNode, type MoveTree } from "../moveTree";
 import EvalGraph from "./EvalGraph";
 import CoachPanel from "./CoachPanel";
 import MoveList from "./MoveList";
@@ -10,32 +11,36 @@ type Tab = "review" | "moves";
 
 interface ReviewSidebarProps {
   result: AnalysisResult;
+  tree: MoveTree;
+  /** Main-line ply the eval-graph cursor should sit on. */
   currentPly: number;
-  currentMove: MoveData | null;
-  comment: string;
-  onSelect: (ply: number) => void;
+  onSelectPly: (ply: number) => void;
+  onSelectNode: (nodeId: string) => void;
 }
 
 export default function ReviewSidebar({
   result,
+  tree,
   currentPly,
-  currentMove,
-  comment,
-  onSelect,
+  onSelectPly,
+  onSelectNode,
 }: ReviewSidebarProps) {
   const [tab, setTab] = useState<Tab>("review");
+  const node = currentNode(tree);
 
   return (
     <div className="h-full bg-panel border border-panelBorder rounded-xl flex flex-col overflow-hidden">
       <div className="shrink-0 p-3 pb-0">
         <CoachPanel
           summary={result.coach.summary}
-          comment={comment}
-          classification={currentMove?.classification ?? null}
-          bestLine={currentMove?.best_line}
+          comment={node.comment}
+          classification={node.data?.classification ?? null}
+          bestLine={node.data?.best_line}
+          loading={node.status === "pending"}
+          error={node.status === "error" ? node.error : null}
         />
         <div className="mt-3">
-          <EvalGraph history={result.hist} currentPly={currentPly} onSelect={onSelect} />
+          <EvalGraph history={result.hist} currentPly={currentPly} onSelect={onSelectPly} />
         </div>
       </div>
 
@@ -52,7 +57,7 @@ export default function ReviewSidebar({
         {tab === "review" ? (
           <GameSummary result={result} />
         ) : (
-          <MoveList moves={result.move_data} currentPly={currentPly} onSelect={onSelect} />
+          <MoveList tree={tree} onSelect={onSelectNode} />
         )}
       </div>
 

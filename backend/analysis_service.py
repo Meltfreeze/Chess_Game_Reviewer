@@ -114,6 +114,21 @@ class AnalysisService:
         finally:
             self._lock.release()
 
+    def analyse_move(self, fen, uci, depth=None, ply=0, uci_history=None):
+        from backend.engine import analyze_move
+
+        depth = min(MAX_DEPTH, depth or DEFAULT_DEPTH)
+        engine = self._ensure_engine()
+        if not self._lock.acquire(timeout=ENGINE_LOCK_TIMEOUT_SECONDS):
+            raise TimeoutError(
+                "Engine is busy analyzing another request. Please try again shortly."
+            )
+        try:
+            return analyze_move(fen, uci, engine, depth=depth, ply=ply,
+                                uci_history=uci_history)
+        finally:
+            self._lock.release()
+
     def shutdown(self):
         if self._engine:
             self._engine.quit()

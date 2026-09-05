@@ -79,6 +79,11 @@ export interface AnalysisResult {
   player_color: string;
 }
 
+export interface MoveReviewResult {
+  move: MoveData;
+  comment: string;
+}
+
 export interface EngineLine {
   eval: string;
   eval_cp_white: number;

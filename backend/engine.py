@@ -183,12 +183,19 @@ def is_miss_move(board_before, move, best_move, prev_cp, curr_cp, classification
 
 
 def classify_move(prev_cp, curr_cp, is_only_move, is_sac, is_book, is_mate=False, is_miss=False):
+    """Label one move, ranking the short-circuits before the eval ladder.
+
+    Mate ends the game, so it outranks everything. A book move is established
+    theory and is not graded at all -- including not being second-guessed as a
+    Miss, which would otherwise read as "you missed a tactic" on known opening
+    moves.
+    """
     if is_mate:
         return "Brilliant" if is_sac else "Best"
-    if is_miss:
-        return "Miss"
     if is_book:
         return "Book"
+    if is_miss:
+        return "Miss"
     wp_loss = cp_to_wp(prev_cp) - cp_to_wp(curr_cp)
 
     if wp_loss >= 0.20:
@@ -368,12 +375,6 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
     uci_history = []
     ply = 0
 
-    eco, opening_name = lookup_opening(uci_history)
-    if eco and not metadata["ECO"]:
-        metadata["ECO"] = eco
-    if opening_name and not metadata["Opening"]:
-        metadata["Opening"] = opening_name
-
     total_moves = sum(1 for _ in game.mainline())
 
     for game_node in game.mainline():
@@ -385,6 +386,7 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         san = board.san(move)
 
         is_sac = is_sacrifice(board, move)
+        stays_in_book = is_book_move(uci_history, move.uci())
         second_cp_white = (_score_white_cp(prev_info[1])
                            if len(prev_info) > 1 else prev_cp_white)
 
@@ -410,13 +412,13 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
             prev_cp, curr_cp, second_cp = -prev_cp_white, -curr_cp_white, -second_cp_white
 
         is_only_move = (cp_to_wp(prev_cp) - cp_to_wp(second_cp)) >= 0.20
-        book_ok, eco_ply, name_ply = is_book_move(uci_history, ply)
-        is_book = book_ok and abs(curr_cp) < 80 and not is_sac
+        is_book = stays_in_book and abs(curr_cp) < 80 and not is_sac
 
         eco, opening_name = lookup_opening(uci_history)
-        if eco and not metadata["ECO"]:
-            metadata["ECO"] = eco
         if opening_name:
+            # Both fields move together. Setting ECO once while the name kept
+            # refining every ply paired a first-move code with a deep-line name.
+            metadata["ECO"] = eco
             metadata["Opening"] = opening_name
 
         phase = _game_phase(board, ply)
@@ -510,6 +512,96 @@ def analyze_game(pgn_str, engine, depth=18):
         raise ValueError("Analysis produced no result")
     return (result["move_data"], result["stats"], result["meta"],
             result["hist"], result["critical_moments"])
+
+
+def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
+    """Review a single move played from an arbitrary position.
+
+    Produces the same entry shape as analyze_game_streaming, so a move explored
+    off the reviewed game runs through the identical classification and fact
+    pipeline as a real one. uci_history is the UCI path from the starting
+    position up to (not including) this move; pass None to skip book/opening
+    detection when the path is unknown.
+    """
+    board_before = chess.Board(fen)
+    move = chess.Move.from_uci(uci)
+    if move not in board_before.legal_moves:
+        raise ValueError(f"{uci} is not legal in this position")
+
+    limit = chess.engine.Limit(depth=depth, time=ENGINE_TIME_LIMIT_SECONDS)
+    prev_info = engine.analyse(board_before, limit, multipv=2)
+    prev_cp_white = _score_white_cp(prev_info[0])
+    second_cp_white = (_score_white_cp(prev_info[1])
+                       if len(prev_info) > 1 else prev_cp_white)
+    best_move = prev_info[0]["pv"][0] if prev_info[0].get("pv") else None
+    best_line = _pv_to_san(board_before, prev_info[0].get("pv", []))
+
+    mover = board_before.turn
+    san = board_before.san(move)
+    is_sac = is_sacrifice(board_before, move)
+
+    board = board_before.copy(stack=False)
+    board.push(move)
+    is_mate_delivered = board.is_checkmate()
+
+    info = engine.analyse(board, limit, multipv=2)
+    curr_cp_white = _score_white_cp(info[0])
+    pov = info[0]["score"].white()
+
+    opp_reply_san = None
+    if info[0].get("pv"):
+        try:
+            opp_reply_san = board.san(info[0]["pv"][0])
+        except Exception:
+            opp_reply_san = None
+
+    if mover == chess.WHITE:
+        prev_cp, curr_cp, second_cp = prev_cp_white, curr_cp_white, second_cp_white
+    else:
+        prev_cp, curr_cp, second_cp = -prev_cp_white, -curr_cp_white, -second_cp_white
+
+    is_only_move = (cp_to_wp(prev_cp) - cp_to_wp(second_cp)) >= 0.20
+
+    is_book = False
+    opening_name = None
+    if uci_history is not None:
+        # Same convention as analyze_game_streaming: both the book test and the
+        # opening name see the line *including* the move being judged, so the
+        # same move gets the same classification either way.
+        is_book = (is_book_move(uci_history, move.uci())
+                   and abs(curr_cp) < 80 and not is_sac)
+        _, opening_name = lookup_opening([*uci_history, move.uci()])
+
+    phase = _game_phase(board, ply)
+    base_class = classify_move(prev_cp, curr_cp, is_only_move, is_sac, is_book,
+                               is_mate_delivered)
+    is_miss = is_miss_move(board_before, move, best_move, prev_cp, curr_cp, base_class)
+    classification = classify_move(prev_cp, curr_cp, is_only_move, is_sac, is_book,
+                                   is_mate_delivered, is_miss=is_miss)
+
+    facts, prompt_str = extract_facts(
+        board_before, move, best_move, prev_cp, curr_cp,
+        classification, opp_reply_san, opening_name, phase)
+
+    return {
+        "ply": ply,
+        "move_number": (ply // 2) + 1,
+        "turn": "White" if mover == chess.WHITE else "Black",
+        "san": san,
+        "uci": move.uci(),
+        "fen": board.fen(),
+        "fen_before": board_before.fen(),
+        "eval": _eval_str(pov),
+        "eval_cp_white": curr_cp_white,
+        "classification": classification,
+        "facts": facts,
+        "prompt_str": prompt_str,
+        "cp_loss": min(1000, max(0, prev_cp - curr_cp)),
+        "best_line": best_line,
+        "best_uci": best_move.uci() if best_move else None,
+        "eval_swing": abs((curr_cp - prev_cp) / 100),
+        "phase": phase,
+    }
 
 
 def analyse_fen(fen, engine, depth=18, multipv=3):

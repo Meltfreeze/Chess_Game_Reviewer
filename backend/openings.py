@@ -1,51 +1,69 @@
-"""Lightweight ECO opening lookup by move sequence (UCI)."""
+"""ECO opening lookup backed by the lichess chess-openings dataset.
 
-# Common opening lines: UCI move sequence -> (ECO code, name)
-_OPENINGS = {
-    "e2e4 e7e5 g1f3 b8c6 f1b5": ("C60", "Ruy Lopez"),
-    "e2e4 e7e5 g1f3 b8c6 f1c4": ("C50", "Italian Game"),
-    "e2e4 c7c5 g1f3 d7d6 d2d4": ("B50", "Sicilian Defense"),
-    "e2e4 e7e6 d2d4 d7d5 b1c3": ("C02", "French Defense"),
-    "e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3": ("B90", "Sicilian Najdorf"),
-    "d2d4 d7d5 c2c4": ("D06", "Queen's Gambit"),
-    "d2d4 d7d5 c2c4 e7e6 b1c3 g8f6": ("D42", "Queen's Gambit Declined"),
-    "d2d4 g8f6 c2c4 g7g6 b1c3 d7d5": ("E60", "King's Indian Defense"),
-    "e2e4 e7e5 g1f3 g8f6": ("C42", "Petrov Defense"),
-    "e2e4 e7e5 g1f3 b8c6 f1c4 f8c5": ("C51", "Italian Game: Evans Gambit"),
-    "e2e4 c7c5 g1f3 b8c6 f1b5": ("B30", "Sicilian Defense"),
-    "e2e4 e7e5 b1c3": ("C20", "King's Pawn Game"),
-    "d2d4 g8f6 c2c4 e7e6 b1c3 f8b4": ("E20", "Nimzo-Indian Defense"),
-    "d2d4 g8f6 c2c4 e7e6 g1f3 d7d5 b1c3 f8e7": ("E32", "Nimzo-Indian Defense"),
-    "e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4": ("C70", "Ruy Lopez: Morphy Defense"),
-    "e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 c2c3 g8f6": ("C54", "Italian Game: Giuoco Piano"),
-    "e2e4 c7c5 g1f3 e7e6 d2d4 c5d4 f3d4": ("B40", "Sicilian Defense"),
-    "e2e4 e7e5 g1f3 b8c6 f1b5 g8f6": ("C65", "Ruy Lopez: Berlin Defense"),
-    "d2d4 d7d5 c2c4 d5c4 e2e4 g8f6": ("D20", "Queen's Gambit Accepted"),
-    "g1f3 d7d5 d2d4": ("A40", "Queen's Pawn Game"),
-}
+data/openings.tsv maps a UCI move sequence to its (ECO, name). It is generated
+by tools/build_openings.py -- regenerate it rather than editing it by hand. A
+missing data file raises at import on purpose: silently having no openings is
+the failure mode this table exists to prevent.
+"""
+
+import csv
+import os
+
+BOOK_MAX_PLIES = 12
+"""How far Book is allowed to run.
+
+Named lines in the dataset reach 36 plies, but classify_move short-circuits on
+Book before it grades anything, so an uncapped test would leave a player
+following deep theory with no verdict on half their game.
+"""
+
+_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "data", "openings.tsv")
+
+
+def _load(path=_DATA_PATH):
+    """Return (lines, prefixes) -- exact-line lookup, plus every book prefix.
+
+    Prefixes stop at BOOK_MAX_PLIES since is_book_move never asks about a
+    longer path, which keeps the set to a fraction of its full size.
+    """
+    lines = {}
+    prefixes = set()
+    with open(path, encoding="utf-8") as fh:
+        for row in csv.reader(fh, delimiter="\t"):
+            if not row or row[0].startswith("#") or row[0] == "uci":
+                continue
+            uci, eco, name = row[0], row[1], row[2]
+            lines[uci] = (eco, name)
+            moves = uci.split(" ")
+            for end in range(1, min(len(moves), BOOK_MAX_PLIES) + 1):
+                prefixes.add(" ".join(moves[:end]))
+    return lines, prefixes
+
+
+_OPENINGS, _BOOK_PREFIXES = _load()
 
 
 def lookup_opening(uci_moves):
-    """Return (eco, name) for the longest matching prefix of UCI moves."""
-    key = " ".join(uci_moves)
-    best = None
-    for prefix, info in _OPENINGS.items():
-        if key.startswith(prefix) or prefix.startswith(key):
-            if best is None or len(prefix) > len(best[0]):
-                best = (prefix, info)
-    if best and key.startswith(best[0]):
-        return best[1]
-    # partial match on longest prefix contained in key
-    for prefix, info in sorted(_OPENINGS.items(), key=lambda x: -len(x[0])):
-        if key.startswith(prefix):
+    """Return (eco, name) for the longest named line prefixing these moves.
+
+    The longest match stops growing once a game leaves the book, so the opening
+    keeps its label for the rest of the game.
+    """
+    for end in range(len(uci_moves), 0, -1):
+        info = _OPENINGS.get(" ".join(uci_moves[:end]))
+        if info:
             return info
     return None, None
 
 
-def is_book_move(uci_moves, ply):
-    eco, name = lookup_opening(uci_moves)
-    if eco and ply < len(uci_moves) + 2:
-        return True, eco, name
-    if ply < 8 and eco:
-        return True, eco, name
-    return False, eco, name
+def is_book_move(uci_moves, uci):
+    """True when playing `uci` from `uci_moves` stays inside a named opening line.
+
+    `uci_moves` is the path from the starting position up to (not including)
+    `uci`, so this answers "is the move itself still book". False once the line
+    leaves every named opening, and False past BOOK_MAX_PLIES.
+    """
+    if len(uci_moves) >= BOOK_MAX_PLIES:
+        return False
+    return " ".join([*uci_moves, uci]) in _BOOK_PREFIXES

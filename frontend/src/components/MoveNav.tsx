@@ -1,28 +1,37 @@
 import type { ReactNode } from "react";
 
 interface MoveNavProps {
-  currentPly: number;
-  totalPlies: number;
-  onSelect: (ply: number) => void;
+  canPrev: boolean;
+  canNext: boolean;
+  canJumpEnd: boolean;
+  onFirst: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+  onLast: () => void;
 }
 
-export default function MoveNav({ currentPly, totalPlies, onSelect }: MoveNavProps) {
-  const atStart = currentPly <= 0;
-  const atEnd = currentPly >= totalPlies;
-
+export default function MoveNav({
+  canPrev,
+  canNext,
+  canJumpEnd,
+  onFirst,
+  onPrev,
+  onNext,
+  onLast,
+}: MoveNavProps) {
   return (
     <div className="shrink-0 bg-panel border border-panelBorder rounded-xl p-2 flex gap-2">
-      <NavButton label="First move" disabled={atStart} onClick={() => onSelect(0)}>
+      <NavButton label="First move" disabled={!canPrev} onClick={onFirst}>
         <path d="M6.5 5v14" />
         <path d="M17.5 5l-7 7 7 7" />
       </NavButton>
-      <NavButton label="Previous move" disabled={atStart} onClick={() => onSelect(currentPly - 1)}>
+      <NavButton label="Previous move" disabled={!canPrev} onClick={onPrev}>
         <path d="M15.5 5l-7 7 7 7" />
       </NavButton>
-      <NavButton label="Next move" disabled={atEnd} onClick={() => onSelect(currentPly + 1)}>
+      <NavButton label="Next move" disabled={!canNext} onClick={onNext}>
         <path d="M8.5 5l7 7-7 7" />
       </NavButton>
-      <NavButton label="Last move" disabled={atEnd} onClick={() => onSelect(totalPlies)}>
+      <NavButton label="Last move" disabled={!canJumpEnd} onClick={onLast}>
         <path d="M6.5 5l7 7-7 7" />
         <path d="M17.5 5v14" />
       </NavButton>

@@ -1,13 +1,34 @@
 import { useEffect, useState } from "react";
+import { Chess } from "chess.js";
 import AnalyzeForm from "./components/AnalyzeForm";
 import ReviewBoard from "./components/ReviewBoard";
 import EvalBar from "./components/EvalBar";
 import MoveNav from "./components/MoveNav";
 import ReviewSidebar from "./components/ReviewSidebar";
-import { analyzeGame } from "./api/client";
+import VariationBanner from "./components/VariationBanner";
+import { analyzeGame, reviewMove } from "./api/client";
 import type { AnalysisResult } from "./types";
-
-const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+import {
+  addBranch,
+  buildTree,
+  findChildByUci,
+  forwardId,
+  goBackward,
+  goForward,
+  goToEnd,
+  goToMainPly,
+  goToStart,
+  lastMainLineId,
+  mainLineAnchorId,
+  mainLinePly,
+  navigateTo,
+  nearestEval,
+  newBranchId,
+  pathUci,
+  setNodeError,
+  setNodeReview,
+  type MoveTree,
+} from "./moveTree";
 
 const HEIGHT_RATIO = 0.98;
 const EVAL_GROUP = 26 + 12; // eval bar width + gap-3 to the board
@@ -26,10 +47,11 @@ export default function App() {
   const [progress, setProgress] = useState<{ ply: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [tree, setTree] = useState<MoveTree | null>(null);
   const [playerColor, setPlayerColor] = useState<"White" | "Black">("White");
-  const [historyIndex, setHistoryIndex] = useState(0);
+  const [analysisDepth, setAnalysisDepth] = useState(14);
   const [boardSize, setBoardSize] = useState(520);
-  
+
   useEffect(() => {
     setBoardSize(computeBoardSize());
     const onResize = () => setBoardSize(computeBoardSize());
@@ -37,14 +59,15 @@ export default function App() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  const hasTree = tree !== null;
+
   useEffect(() => {
-    if (!result) return;
-    const total = result.move_data.length;
-    const jumps: Record<string, (ply: number) => number> = {
-      ArrowLeft: (ply) => Math.max(0, ply - 1),
-      ArrowRight: (ply) => Math.min(total, ply + 1),
-      ArrowUp: () => total,
-      ArrowDown: () => 0,
+    if (!hasTree) return;
+    const steps: Record<string, (t: MoveTree) => MoveTree> = {
+      ArrowLeft: goBackward,
+      ArrowRight: goForward,
+      ArrowUp: goToEnd,
+      ArrowDown: goToStart,
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -54,15 +77,15 @@ export default function App() {
       }
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
 
-      const jump = jumps[event.key];
-      if (!jump) return;
-      event.preventDefault(); 
-      setHistoryIndex(jump);
+      const step = steps[event.key];
+      if (!step) return;
+      event.preventDefault();
+      setTree((t) => (t ? step(t) : t));
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [result]);
+  }, [hasTree]);
 
   const handleAnalyze = async (pgn: string, color: "White" | "Black", depth: number) => {
     setLoading(true);
@@ -76,8 +99,9 @@ export default function App() {
         onProgress: (ply, total) => setProgress({ ply, total }),
       });
       setResult(data);
+      setTree(buildTree(data));
       setPlayerColor(color);
-      setHistoryIndex(data.move_data.length);
+      setAnalysisDepth(depth);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");
     } finally {
@@ -85,9 +109,61 @@ export default function App() {
     }
   };
 
-  const currentMove = result && historyIndex > 0 ? result.move_data[historyIndex - 1] : null;
-  const fen = currentMove ? currentMove.fen : STARTING_FEN;
-  const comment = currentMove ? result!.coach.comments[historyIndex - 1] ?? "" : "";
+  /**
+   * Any legal move is playable at any position. An existing branch is re-entered
+   * rather than duplicated; a new one is created as a variation and sent to
+   * /api/move-review so it gets the same coach comment a real move would.
+   */
+  const handlePieceDrop = (source: string, target: string): boolean => {
+    if (!tree) return false;
+
+    const parent = tree.nodes[tree.currentId];
+    const candidates = new Chess(parent.fen)
+      .moves({ verbose: true })
+      .filter((m) => m.from === source && m.to === target);
+    if (candidates.length === 0) return false;
+    const move = candidates.find((m) => m.promotion === "q") ?? candidates[0];
+
+    const existingId = findChildByUci(tree, parent.id, move.lan);
+    if (existingId) {
+      setTree((t) => (t ? navigateTo(t, existingId) : t));
+      return true;
+    }
+
+    const id = newBranchId();
+    setTree((t) =>
+      t
+        ? addBranch(t, parent.id, id, {
+            ply: parent.ply + 1,
+            san: move.san,
+            uci: move.lan,
+            fen: move.after,
+            moveNumber: Math.floor(parent.ply / 2) + 1,
+            turn: parent.ply % 2 === 0 ? "White" : "Black",
+          })
+        : t
+    );
+
+    reviewMove({
+      fen: parent.fen,
+      uci: move.lan,
+      ply: parent.ply,
+      history: pathUci(tree, parent.id),
+      depth: analysisDepth,
+    })
+      .then((res) => setTree((t) => (t ? setNodeReview(t, id, res.move, res.comment) : t)))
+      .catch((err) =>
+        setTree((t) =>
+          t ? setNodeError(t, id, err instanceof Error ? err.message : "Move review failed") : t
+        )
+      );
+
+    return true;
+  };
+
+  const node = tree ? tree.nodes[tree.currentId] : null;
+  const inVariation = node ? !node.isMainLine : false;
+  const evalNow = tree && node ? nearestEval(tree, node.id) : { cp: 0, text: undefined };
 
   return (
     <div className="w-full pt-6 px-6 pb-1">
@@ -101,22 +177,19 @@ export default function App() {
         </div>
       )}
 
-      {result && (
+      {result && tree && node && (
         <div className="flex flex-wrap gap-6 items-start">
           <div className="flex gap-3 shrink-0">
-            <EvalBar
-              evalCpWhite={currentMove ? currentMove.eval_cp_white : 0}
-              evalText={currentMove?.eval}
-              height={boardSize}
-            />
+            <EvalBar evalCpWhite={evalNow.cp} evalText={evalNow.text} height={boardSize} />
             <ReviewBoard
-              fen={fen}
+              fen={node.fen}
               boardWidth={boardSize}
               flipped={playerColor === "Black"}
-              lastMoveUci={currentMove?.uci ?? null}
-              arrowUci={currentMove?.best_uci ?? null}
-              badge={currentMove?.classification ?? null}
-              interactive={false}
+              lastMoveUci={node.uci || null}
+              arrowUci={node.data?.best_uci ?? null}
+              badge={node.data?.classification ?? null}
+              interactive
+              onPieceDrop={handlePieceDrop}
             />
           </div>
 
@@ -124,18 +197,29 @@ export default function App() {
             className="flex-1 min-w-[360px] flex flex-col gap-3"
             style={{ height: boardSize }}
           >
+            {inVariation && (
+              <VariationBanner
+                onReturn={() =>
+                  setTree((t) => (t ? navigateTo(t, mainLineAnchorId(t, t.currentId)) : t))
+                }
+              />
+            )}
             <MoveNav
-              currentPly={historyIndex}
-              totalPlies={result.move_data.length}
-              onSelect={setHistoryIndex}
+              canPrev={node.parentId !== null}
+              canNext={forwardId(tree) !== null}
+              canJumpEnd={tree.currentId !== lastMainLineId(tree)}
+              onFirst={() => setTree((t) => (t ? goToStart(t) : t))}
+              onPrev={() => setTree((t) => (t ? goBackward(t) : t))}
+              onNext={() => setTree((t) => (t ? goForward(t) : t))}
+              onLast={() => setTree((t) => (t ? goToEnd(t) : t))}
             />
             <div className="flex-1 min-h-0">
               <ReviewSidebar
                 result={result}
-                currentPly={historyIndex}
-                currentMove={currentMove}
-                comment={comment}
-                onSelect={setHistoryIndex}
+                tree={tree}
+                currentPly={mainLinePly(tree, tree.currentId)}
+                onSelectPly={(ply) => setTree((t) => (t ? goToMainPly(t, ply) : t))}
+                onSelectNode={(id) => setTree((t) => (t ? navigateTo(t, id) : t))}
               />
             </div>
           </div>

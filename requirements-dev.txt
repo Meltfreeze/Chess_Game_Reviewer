@@ -1,0 +1,8 @@
+# Test-only dependencies. Not installed into the deploy image -- backend/Dockerfile
+# copies requirements.txt only.
+#
+#   pip install -r requirements-dev.txt
+#   python -m pytest
+
+-r requirements.txt
+pytest==9.1.1

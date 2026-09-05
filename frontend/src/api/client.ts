@@ -1,4 +1,4 @@
-import type { AnalysisResult, HealthInfo } from "../types";
+import type { AnalysisResult, HealthInfo, MoveReviewResult } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -21,6 +21,35 @@ export interface AnalyzeOptions {
   playerColor: "White" | "Black";
   depth?: number;
   onProgress?: (ply: number, total: number) => void;
+}
+
+export interface ReviewMoveOptions {
+  /** Position the move is played from. */
+  fen: string;
+  uci: string;
+  /** Zero-based ply index of the move being played. */
+  ply: number;
+  /** UCI path from the starting position up to (not including) the move. */
+  history: string[];
+  depth?: number;
+}
+
+/** Review one move played off the reviewed game — see POST /api/move-review. */
+export async function reviewMove(options: ReviewMoveOptions): Promise<MoveReviewResult> {
+  const { fen, uci, ply, history, depth = 14 } = options;
+
+  const res = await fetch(`${API_BASE}/api/move-review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fen, uci, ply, history, depth }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(typeof err.detail === "string" ? err.detail : "Move review failed");
+  }
+
+  return res.json();
 }
 
 export async function analyzeGame(options: AnalyzeOptions): Promise<AnalysisResult> {

@@ -18,6 +18,7 @@ from backend import coach as coach_mod
 
 _gemini_client = None
 _coach_cache = {}
+_move_comment_cache = {}
 
 
 def _get_gemini():
@@ -65,6 +66,14 @@ app.add_middleware(
 class AnalyzeRequest(BaseModel):
     pgn: str
     player_color: str = Field(default="White", pattern="^(White|Black)$")
+    depth: int = Field(default=DEFAULT_DEPTH, ge=8, le=MAX_DEPTH)
+
+
+class MoveReviewRequest(BaseModel):
+    fen: str = Field(max_length=120)
+    uci: str = Field(pattern="^[a-h][1-8][a-h][1-8][qrbn]?$")
+    ply: int = Field(default=0, ge=0, le=600)
+    history: list[str] | None = Field(default=None, max_length=600)
     depth: int = Field(default=DEFAULT_DEPTH, ge=8, le=MAX_DEPTH)
 
 
@@ -161,6 +170,32 @@ def analyze_game(req: AnalyzeRequest):
             yield _sse_event("error", {"message": f"Analysis failed: {exc}"})
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.post("/api/move-review")
+def move_review(req: MoveReviewRequest):
+    """Review one move played from an arbitrary position (variation exploration).
+
+    Unlike /api/analyze this does not require Gemini — generate_move_comment
+    falls back to the fact-based template when the key is missing or the free
+    tier rate-limits us, so board exploration keeps working either way.
+    """
+    try:
+        svc = AnalysisService.get()
+        move = svc.analyse_move(
+            req.fen, req.uci, depth=req.depth, ply=req.ply, uci_history=req.history
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (RuntimeError, TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    comment = coach_mod.generate_move_comment(
+        move, _get_gemini(), _cache=_move_comment_cache
+    )
+    return {"move": move, "comment": comment}
 
 
 @app.get("/api/icons/{name}")
