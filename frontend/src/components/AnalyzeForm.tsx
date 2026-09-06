@@ -26,19 +26,37 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
 
       <div className="flex flex-wrap items-center gap-4 mb-3 text-sm">
         <ColorToggle value={playerColor} onChange={setPlayerColor} />
-        <label className="flex items-center gap-2 ml-auto">
-          Depth
-          <select
-            value={depth}
-            onChange={(e) => setDepth(Number(e.target.value))}
-            className="bg-panelBorder rounded px-2 py-1"
-          >
-            <option value={12}>12</option>
-            <option value={14}>14</option>
-            <option value={16}>16</option>
-            <option value={18}>18</option>
-            <option value={20}>20</option>
-          </select>
+        <label className="group ml-auto flex items-center gap-2.5 rounded-lg border border-panelBorder bg-[#21201d] py-1.5 pl-3.5 pr-3 cursor-pointer transition-colors hover:border-[#5c5a57] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40">
+          <span className="text-[0.9rem] font-semibold uppercase tracking-wider leading-none text-[#8b8987]">
+            Depth
+          </span>
+          <div className="relative flex items-center">
+            <select
+              value={depth}
+              onChange={(e) => setDepth(Number(e.target.value))}
+              className="appearance-none bg-transparent pr-5 font-semibold leading-none text-[#e8e8e8] cursor-pointer focus:outline-none"
+            >
+              <option className="bg-panel text-[#e8e8e8]" value={12}>12</option>
+              <option className="bg-panel text-[#e8e8e8]" value={14}>14</option>
+              <option className="bg-panel text-[#e8e8e8]" value={16}>16</option>
+              <option className="bg-panel text-[#e8e8e8]" value={18}>18</option>
+              <option className="bg-panel text-[#e8e8e8]" value={20}>20</option>
+            </select>
+            <svg
+              aria-hidden
+              viewBox="0 0 12 12"
+              className="pointer-events-none absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 text-[#8b8987] transition-colors group-hover:text-[#e8e8e8]"
+            >
+              <path
+                d="M2.5 4.5 6 8l3.5-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </div>
         </label>
       </div>
 
