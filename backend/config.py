@@ -43,3 +43,18 @@ def get_engine_path():
 
 def get_gemini_api_key():
     return os.environ.get("GEMINI_API_KEY")
+
+
+def get_auth_secret():
+    """Shared password gating the compute/Gemini endpoints.
+
+    Returned stripped so stray whitespace in a dashboard-set env var can't cause
+    a silent mismatch. Empty/unset means the gate is unconfigured and protected
+    endpoints fail closed (see require_auth in main.py).
+    """
+    return (os.environ.get("AUTH_SECRET") or "").strip()
+
+
+# How long an issued auth token stays valid. Long enough to review several
+# games without re-entering the password; short enough to bound a leaked token.
+AUTH_TOKEN_TTL_SECONDS = int(os.environ.get("AUTH_TOKEN_TTL_SECONDS", str(12 * 60 * 60)))

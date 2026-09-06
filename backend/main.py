@@ -2,10 +2,12 @@
 
 import json
 import os
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -13,7 +15,14 @@ from pydantic import BaseModel, Field
 load_dotenv()
 
 from backend.analysis_service import AnalysisService
-from backend.config import DEFAULT_DEPTH, MAX_DEPTH, get_gemini_api_key
+from backend import auth as auth_mod
+from backend.config import (
+    AUTH_TOKEN_TTL_SECONDS,
+    DEFAULT_DEPTH,
+    MAX_DEPTH,
+    get_auth_secret,
+    get_gemini_api_key,
+)
 from backend import coach as coach_mod
 
 _gemini_client = None
@@ -77,6 +86,70 @@ class MoveReviewRequest(BaseModel):
     depth: int = Field(default=DEFAULT_DEPTH, ge=8, le=MAX_DEPTH)
 
 
+class AuthRequest(BaseModel):
+    password: str = Field(max_length=512)
+
+
+# --- Shared-secret gate -----------------------------------------------------
+#
+# The check lives on the server so it cannot be bypassed from the browser: dev
+# tools, curl, or a forged frontend all hit the same require_auth dependency,
+# which every compute/Gemini endpoint depends on. A missing token, a tampered
+# or expired one, and an unset AUTH_SECRET are all refused before any Stockfish
+# search or Gemini call runs.
+
+
+def require_auth(authorization: str | None = Header(default=None)) -> None:
+    secret = get_auth_secret()
+    if not secret:
+        # Fail closed: without a configured secret there is no safe way to let a
+        # request through, so protect the API key rather than silently open up.
+        raise HTTPException(status_code=503, detail="Authentication is not configured on the server.")
+    token = authorization[7:].strip() if authorization and authorization[:7].lower() == "bearer " else ""
+    if not auth_mod.verify_token(secret, token):
+        raise HTTPException(status_code=401, detail="Authentication required or session expired.")
+
+
+# Small in-memory throttle so the password can't be brute-forced online. Keyed
+# by client IP; per-process only, which is fine for the single free-tier worker.
+_AUTH_MAX_FAILURES = 8
+_AUTH_WINDOW_SECONDS = 60.0
+_auth_failures: dict[str, deque] = {}
+
+
+def _auth_throttled(ip: str) -> bool:
+    now = time.monotonic()
+    hits = _auth_failures.get(ip)
+    if hits is None:
+        return False
+    while hits and now - hits[0] > _AUTH_WINDOW_SECONDS:
+        hits.popleft()
+    return len(hits) >= _AUTH_MAX_FAILURES
+
+
+def _record_auth_failure(ip: str) -> None:
+    hits = _auth_failures.setdefault(ip, deque())
+    hits.append(time.monotonic())
+
+
+@app.post("/api/auth")
+def authenticate(req: AuthRequest, request: Request):
+    secret = get_auth_secret()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Authentication is not configured on the server.")
+
+    client_ip = request.client.host if request.client else "unknown"
+    if _auth_throttled(client_ip):
+        raise HTTPException(status_code=429, detail="Too many attempts. Wait a minute and try again.")
+
+    if not auth_mod.verify_password(secret, req.password):
+        _record_auth_failure(client_ip)
+        raise HTTPException(status_code=401, detail="Incorrect password.")
+
+    _auth_failures.pop(client_ip, None)
+    return {"token": auth_mod.issue_token(secret, AUTH_TOKEN_TTL_SECONDS), "expires_in": AUTH_TOKEN_TTL_SECONDS}
+
+
 @app.get("/api/health")
 def health():
     try:
@@ -89,7 +162,7 @@ def health():
         return {"ready": False, "error": str(exc), "gemini_configured": get_gemini_api_key() is not None}
 
 
-@app.get("/api/position")
+@app.get("/api/position", dependencies=[Depends(require_auth)])
 def analyse_position(
     fen: str = Query(...),
     depth: int = Query(default=DEFAULT_DEPTH, ge=8, le=MAX_DEPTH),
@@ -109,7 +182,7 @@ def _sse_event(event_type, data):
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
-@app.post("/api/analyze")
+@app.post("/api/analyze", dependencies=[Depends(require_auth)])
 def analyze_game(req: AnalyzeRequest):
     gemini = _get_gemini()
     if gemini is None:
@@ -172,7 +245,7 @@ def analyze_game(req: AnalyzeRequest):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-@app.post("/api/move-review")
+@app.post("/api/move-review", dependencies=[Depends(require_auth)])
 def move_review(req: MoveReviewRequest):
     """Review one move played from an arbitrary position (variation exploration).
 

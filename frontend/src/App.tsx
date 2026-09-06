@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import AnalyzeForm from "./components/AnalyzeForm";
 import ReviewBoard from "./components/ReviewBoard";
@@ -6,7 +6,9 @@ import EvalBar from "./components/EvalBar";
 import MoveNav from "./components/MoveNav";
 import ReviewSidebar from "./components/ReviewSidebar";
 import VariationBanner from "./components/VariationBanner";
+import PasswordModal from "./components/PasswordModal";
 import { analyzeGame, reviewMove } from "./api/client";
+import { AuthError, hasValidToken } from "./api/auth";
 import type { AnalysisResult } from "./types";
 import {
   addBranch,
@@ -52,6 +54,14 @@ export default function App() {
   const [analysisDepth, setAnalysisDepth] = useState(14);
   const [boardSize, setBoardSize] = useState(520);
 
+  // Shared-secret gate: analysing a game needs a valid session token. When one
+  // is absent (or has expired) the requested analysis is parked here and the
+  // password modal opens; a successful unlock replays it.
+  const [authOpen, setAuthOpen] = useState(false);
+  const pendingAnalyze = useRef<{ pgn: string; color: "White" | "Black"; depth: number } | null>(
+    null
+  );
+
   useEffect(() => {
     setBoardSize(computeBoardSize());
     const onResize = () => setBoardSize(computeBoardSize());
@@ -87,7 +97,16 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [hasTree]);
 
-  const handleAnalyze = async (pgn: string, color: "White" | "Black", depth: number) => {
+  const handleAnalyze = (pgn: string, color: "White" | "Black", depth: number) => {
+    if (!hasValidToken()) {
+      pendingAnalyze.current = { pgn, color, depth };
+      setAuthOpen(true);
+      return;
+    }
+    runAnalyze(pgn, color, depth);
+  };
+
+  const runAnalyze = async (pgn: string, color: "White" | "Black", depth: number) => {
     setLoading(true);
     setError(null);
     setProgress(null);
@@ -103,10 +122,28 @@ export default function App() {
       setPlayerColor(color);
       setAnalysisDepth(depth);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Analysis failed");
+      if (err instanceof AuthError) {
+        // Token expired between the check and the request — re-prompt and replay.
+        pendingAnalyze.current = { pgn, color, depth };
+        setAuthOpen(true);
+      } else {
+        setError(err instanceof Error ? err.message : "Analysis failed");
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleAuthSuccess = () => {
+    setAuthOpen(false);
+    const pending = pendingAnalyze.current;
+    pendingAnalyze.current = null;
+    if (pending) runAnalyze(pending.pgn, pending.color, pending.depth);
+  };
+
+  const handleAuthCancel = () => {
+    setAuthOpen(false);
+    pendingAnalyze.current = null;
   };
 
   /**
@@ -152,11 +189,20 @@ export default function App() {
       depth: analysisDepth,
     })
       .then((res) => setTree((t) => (t ? setNodeReview(t, id, res.move, res.comment) : t)))
-      .catch((err) =>
-        setTree((t) =>
-          t ? setNodeError(t, id, err instanceof Error ? err.message : "Move review failed") : t
-        )
-      );
+      .catch((err) => {
+        if (err instanceof AuthError) {
+          setAuthOpen(true);
+          setTree((t) =>
+            t
+              ? setNodeError(t, id, "Session expired — re-enter the password, then replay the move.")
+              : t
+          );
+        } else {
+          setTree((t) =>
+            t ? setNodeError(t, id, err instanceof Error ? err.message : "Move review failed") : t
+          );
+        }
+      });
 
     return true;
   };
@@ -225,6 +271,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {authOpen && <PasswordModal onSuccess={handleAuthSuccess} onCancel={handleAuthCancel} />}
     </div>
   );
 }

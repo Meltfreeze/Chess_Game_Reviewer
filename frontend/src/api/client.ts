@@ -1,4 +1,5 @@
 import type { AnalysisResult, HealthInfo, MoveReviewResult } from "../types";
+import { authHeader, AuthError, clearToken } from "./auth";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -40,10 +41,14 @@ export async function reviewMove(options: ReviewMoveOptions): Promise<MoveReview
 
   const res = await fetch(`${API_BASE}/api/move-review`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader() },
     body: JSON.stringify({ fen, uci, ply, history, depth }),
   });
 
+  if (res.status === 401) {
+    clearToken();
+    throw new AuthError();
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(typeof err.detail === "string" ? err.detail : "Move review failed");
@@ -57,10 +62,14 @@ export async function analyzeGame(options: AnalyzeOptions): Promise<AnalysisResu
 
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeader() },
     body: JSON.stringify({ pgn, player_color: playerColor, depth }),
   });
 
+  if (res.status === 401) {
+    clearToken();
+    throw new AuthError();
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(typeof err.detail === "string" ? err.detail : "Analysis failed");
