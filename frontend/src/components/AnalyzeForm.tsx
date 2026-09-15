@@ -97,7 +97,7 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
         <ColorToggle value={playerColor} onChange={setPlayerColor} />
         <div
           ref={depthControlRef}
-          className="relative ml-auto flex items-center gap-2.5 rounded-lg border border-panelBorder bg-[#21201d] py-1.5 pl-1.5 pr-1.5 transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40"
+          className="relative ml-auto flex items-center gap-[0.325rem] rounded-lg border border-panelBorder bg-[#21201d] py-1.5 pl-1.5 pr-1.5 transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40"
         >
           <span className="text-[0.9rem] leading-none text-[#8b8987]">
             Depth
