@@ -50,9 +50,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [tree, setTree] = useState<MoveTree | null>(null);
-  const [playerColor, setPlayerColor] = useState<"White" | "Black">("White");
   const [analysisDepth, setAnalysisDepth] = useState(14);
   const [boardSize, setBoardSize] = useState(520);
+  const [boardFlipped, setBoardFlipped] = useState(false);
 
   // Shared-secret gate: analysing a game needs a valid session token. When one
   // is absent (or has expired) the requested analysis is parked here and the
@@ -119,8 +119,8 @@ export default function App() {
       });
       setResult(data);
       setTree(buildTree(data));
-      setPlayerColor(color);
       setAnalysisDepth(depth);
+      setBoardFlipped(color === "Black");
     } catch (err) {
       if (err instanceof AuthError) {
         // Token expired between the check and the request — re-prompt and replay.
@@ -230,7 +230,7 @@ export default function App() {
             <ReviewBoard
               fen={node.fen}
               boardWidth={boardSize}
-              flipped={playerColor === "Black"}
+              flipped={boardFlipped}
               lastMoveUci={node.uci || null}
               arrowUci={node.data?.best_uci ?? null}
               badge={node.data?.classification ?? null}
@@ -251,9 +251,11 @@ export default function App() {
               />
             )}
             <MoveNav
+              flipped={boardFlipped}
               canPrev={node.parentId !== null}
               canNext={forwardId(tree) !== null}
               canJumpEnd={tree.currentId !== lastMainLineId(tree)}
+              onFlip={() => setBoardFlipped((current) => !current)}
               onFirst={() => setTree((t) => (t ? goToStart(t) : t))}
               onPrev={() => setTree((t) => (t ? goBackward(t) : t))}
               onNext={() => setTree((t) => (t ? goForward(t) : t))}
