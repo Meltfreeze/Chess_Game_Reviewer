@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchHealth } from "../api/client";
 import type { HealthInfo } from "../types";
+
+const DEPTH_OPTIONS = [12, 14, 16, 18, 20] as const;
 
 interface AnalyzeFormProps {
   onAnalyze: (pgn: string, playerColor: PlayerColor, depth: number) => void;
@@ -12,11 +14,78 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
   const [pgn, setPgn] = useState("");
   const [playerColor, setPlayerColor] = useState<PlayerColor>("White");
   const [depth, setDepth] = useState(14);
+  const [depthListOpen, setDepthListOpen] = useState(false);
+  const [highlightedDepthIndex, setHighlightedDepthIndex] = useState(0);
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const depthControlRef = useRef<HTMLDivElement>(null);
+  const depthButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     fetchHealth().then(setHealth).catch(() => setHealth({ ready: false }));
   }, []);
+
+  useEffect(() => {
+    if (!depthListOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!depthControlRef.current?.contains(event.target as Node)) {
+        setDepthListOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDepthListOpen(false);
+        depthButtonRef.current?.focus();
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [depthListOpen]);
+
+  const openDepthList = () => {
+    const selectedIndex = DEPTH_OPTIONS.findIndex((option) => option === depth);
+    setHighlightedDepthIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    setDepthListOpen(true);
+  };
+
+  const selectDepth = (nextDepth: number) => {
+    setDepth(nextDepth);
+    setDepthListOpen(false);
+    depthButtonRef.current?.focus();
+  };
+
+  const handleDepthKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Escape") return;
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (depthListOpen) {
+        selectDepth(DEPTH_OPTIONS[highlightedDepthIndex]);
+      } else {
+        openDepthList();
+      }
+      return;
+    }
+
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+
+    event.preventDefault();
+    if (!depthListOpen) {
+      openDepthList();
+      return;
+    }
+
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    setHighlightedDepthIndex((current) =>
+      (current + direction + DEPTH_OPTIONS.length) % DEPTH_OPTIONS.length
+    );
+  };
 
   const canAnalyze = health?.ready && health?.gemini_configured && !loading && pgn.trim();
 
@@ -26,38 +95,61 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
 
       <div className="flex flex-wrap items-center gap-4 mb-3 text-sm">
         <ColorToggle value={playerColor} onChange={setPlayerColor} />
-        <label className="group ml-auto flex items-center gap-2.5 rounded-lg border border-panelBorder bg-[#21201d] py-1.5 pl-3.5 pr-3 cursor-pointer transition-colors hover:border-[#5c5a57] focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40">
-          <span className="text-[0.9rem] font-semibold uppercase tracking-wider leading-none text-[#8b8987]">
+        <div
+          ref={depthControlRef}
+          className="relative ml-auto flex items-center gap-2.5 rounded-lg border border-panelBorder bg-[#21201d] py-1.5 pl-1.5 pr-1.5 transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40"
+        >
+          <span className="text-[0.9rem] leading-none text-[#8b8987]">
             Depth
           </span>
-          <div className="relative flex items-center">
-            <select
-              value={depth}
-              onChange={(e) => setDepth(Number(e.target.value))}
-              className="appearance-none bg-transparent pr-5 font-semibold leading-none text-[#e8e8e8] cursor-pointer focus:outline-none"
+          <button
+            ref={depthButtonRef}
+            type="button"
+            aria-label={`Select analysis depth, current ${depth}`}
+            aria-haspopup="listbox"
+            aria-expanded={depthListOpen}
+            aria-controls="depth-options"
+            onClick={() => (depthListOpen ? setDepthListOpen(false) : openDepthList())}
+            onKeyDown={handleDepthKeyDown}
+            className="min-w-12 rounded-md bg-panelBorder px-3 py-1.5 font-semibold leading-none text-[#e8e8e8] transition-colors hover:bg-[#5c5a57] focus:outline-none"
+          >
+            {depth}
+          </button>
+
+          {depthListOpen && (
+            <div
+              id="depth-options"
+              role="listbox"
+              aria-label="Analysis depth"
+              className="absolute right-0 top-full z-20 mt-1.5 min-w-24 overflow-hidden rounded-lg border border-panelBorder bg-panel p-1 shadow-xl"
             >
-              <option className="bg-panel text-[#e8e8e8]" value={12}>12</option>
-              <option className="bg-panel text-[#e8e8e8]" value={14}>14</option>
-              <option className="bg-panel text-[#e8e8e8]" value={16}>16</option>
-              <option className="bg-panel text-[#e8e8e8]" value={18}>18</option>
-              <option className="bg-panel text-[#e8e8e8]" value={20}>20</option>
-            </select>
-            <svg
-              aria-hidden
-              viewBox="0 0 12 12"
-              className="pointer-events-none absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 text-[#8b8987] transition-colors group-hover:text-[#e8e8e8]"
-            >
-              <path
-                d="M2.5 4.5 6 8l3.5-3.5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </div>
-        </label>
+              {DEPTH_OPTIONS.map((option, index) => {
+                const active = option === depth;
+                const highlighted = index === highlightedDepthIndex;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    onMouseEnter={() => setHighlightedDepthIndex(index)}
+                    onClick={() => selectDepth(option)}
+                    className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left font-semibold transition-colors focus:outline-none ${
+                      active
+                        ? "bg-accent/20 text-accent"
+                        : highlighted
+                          ? "bg-panelBorder text-[#e8e8e8]"
+                          : "text-[#8b8987] hover:bg-panelBorder hover:text-[#e8e8e8]"
+                    }`}
+                  >
+                    <span>{option}</span>
+                    {active && <span aria-hidden>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       <textarea
