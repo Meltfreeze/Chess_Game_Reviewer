@@ -4,6 +4,7 @@ interface EvalBarProps {
   evalCpWhite: number;
   evalText?: string;
   height?: number;
+  flipped?: boolean;
 }
 
 function formatEvalLabel(evalCpWhite: number, evalText?: string): string {
@@ -15,10 +16,16 @@ function formatEvalLabel(evalCpWhite: number, evalText?: string): string {
   return (Math.abs(evalCpWhite) / 100).toFixed(1);
 }
 
-export default function EvalBar({ evalCpWhite, evalText, height = 520 }: EvalBarProps) {
+export default function EvalBar({
+  evalCpWhite,
+  evalText,
+  height = 520,
+  flipped = false,
+}: EvalBarProps) {
   const wp = cpToWinPercent(evalCpWhite);
   const whiteHeight = Math.round(wp * height);
   const whiteAhead = evalCpWhite >= 0;
+  const labelAtBottom = whiteAhead !== flipped;
   const label = formatEvalLabel(evalCpWhite, evalText);
 
   return (
@@ -27,15 +34,21 @@ export default function EvalBar({ evalCpWhite, evalText, height = 520 }: EvalBar
       style={{ width: 26, height, background: "#403e3b", position: "relative" }}
     >
       <div
-        className="eval-bar-transition absolute bottom-0 w-full"
-        style={{ height: whiteHeight, background: "#f5f5f0" }}
+        data-testid="eval-bar-white-fill"
+        className="eval-bar-transition absolute w-full"
+        style={{
+          height: whiteHeight,
+          background: "#f5f5f0",
+          top: flipped ? 0 : undefined,
+          bottom: flipped ? undefined : 0,
+        }}
       />
       <span
         className="absolute w-full text-center select-none pointer-events-none"
         style={{
           left: 0,
-          top: whiteAhead ? undefined : 3,
-          bottom: whiteAhead ? 3 : undefined,
+          top: labelAtBottom ? undefined : 3,
+          bottom: labelAtBottom ? 3 : undefined,
           fontSize: 10,
           fontWeight: 700,
           lineHeight: 1,

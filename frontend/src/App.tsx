@@ -226,7 +226,12 @@ export default function App() {
       {result && tree && node && (
         <div className="flex flex-wrap gap-6 items-start">
           <div className="flex gap-3 shrink-0">
-            <EvalBar evalCpWhite={evalNow.cp} evalText={evalNow.text} height={boardSize} />
+            <EvalBar
+              evalCpWhite={evalNow.cp}
+              evalText={evalNow.text}
+              height={boardSize}
+              flipped={boardFlipped}
+            />
             <ReviewBoard
               fen={node.fen}
               boardWidth={boardSize}

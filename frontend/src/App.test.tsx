@@ -30,7 +30,11 @@ vi.mock("./components/MoveNav", () => ({
   ),
 }));
 
-vi.mock("./components/EvalBar", () => ({ default: () => null }));
+vi.mock("./components/EvalBar", () => ({
+  default: ({ flipped }: { flipped: boolean }) => (
+    <div data-testid="eval-bar" data-flipped={flipped} />
+  ),
+}));
 vi.mock("./components/ReviewSidebar", () => ({ default: () => null }));
 vi.mock("./components/VariationBanner", () => ({ default: () => null }));
 vi.mock("./components/PasswordModal", () => ({ default: () => null }));
@@ -93,15 +97,18 @@ describe("App board orientation", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
     await waitFor(() => expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "false"));
+    expect(screen.getByTestId("eval-bar")).toHaveAttribute("data-flipped", "false");
 
     fireEvent.click(screen.getByRole("button", { name: "Flip board" }));
     expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "true");
+    expect(screen.getByTestId("eval-bar")).toHaveAttribute("data-flipped", "true");
 
     fireEvent.click(screen.getByRole("button", { name: "First move" }));
     expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "true");
 
     fireEvent.click(screen.getByRole("button", { name: "Flip board" }));
     expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "false");
+    expect(screen.getByTestId("eval-bar")).toHaveAttribute("data-flipped", "false");
   });
 
   it("starts a new review from the analyzed player's perspective", async () => {
