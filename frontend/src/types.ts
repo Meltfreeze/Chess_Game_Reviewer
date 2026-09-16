@@ -48,6 +48,11 @@ export interface MoveData {
   cp_loss: number;
   best_line: string[];
   best_uci: string | null;
+  best_move: string | null;
+  played_move: string;
+  best_wp: number;
+  second_best_wp: number;
+  legal_move_count: number;
   eval_swing: number;
   phase: string;
 }

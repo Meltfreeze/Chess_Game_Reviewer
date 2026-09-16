@@ -182,7 +182,100 @@ def is_miss_move(board_before, move, best_move, prev_cp, curr_cp, classification
     return False
 
 
-def classify_move(prev_cp, curr_cp, is_only_move, is_sac, is_book, is_mate=False, is_miss=False):
+def is_unique_best(best_wp, second_best_wp):
+    """Return whether the root best move is meaningfully unique.
+
+    The absolute branch catches large practical swings around equality. The
+    relative branch also catches defensive resources in already-bad positions,
+    where an absolute 20-point gap may be impossible.
+    """
+    wp_gap = best_wp - second_best_wp
+    return (
+        wp_gap >= 0.20
+        or (wp_gap >= 0.05 and second_best_wp <= best_wp * 0.50)
+    )
+
+
+def _piece_is_hanging(board, square, color):
+    piece = board.piece_at(square)
+    if not piece or piece.color != color or piece.piece_type == chess.KING:
+        return False
+
+    for attacker_square in board.attackers(not color, square):
+        attacker = board.piece_at(attacker_square)
+        promotions = [None]
+        if (attacker and attacker.piece_type == chess.PAWN
+                and chess.square_rank(square) == BACK_RANK[attacker.color]):
+            promotions = [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]
+        for promotion in promotions:
+            capture = chess.Move(attacker_square, square, promotion=promotion)
+            if board.is_legal(capture) and static_exchange_eval(board, capture) > 0:
+                return True
+    return False
+
+
+def _move_is_safe(board, move):
+    mover = board.turn
+    after = board.copy(stack=False)
+    after.push(move)
+    return not _piece_is_hanging(after, move.to_square, mover)
+
+
+def is_trivially_obvious(move, position, legal_move_count=None,
+                         previous_move=None, previous_move_was_capture=False):
+    """Identify only the narrow, deterministic set of obvious moves.
+
+    Check evasions, king moves, captures, defensive moves, and checking moves
+    are deliberately not enough on their own. Previous-move context is
+    optional so arbitrary-FEN callers can conservatively skip recapture
+    detection when they cannot prove that the prior move was a capture.
+    """
+    if legal_move_count is None:
+        legal_move_count = position.legal_moves.count()
+    if legal_move_count <= 1:
+        return True
+
+    safe = _move_is_safe(position, move)
+    is_capture = position.is_capture(move)
+
+    if (safe and is_capture and previous_move_was_capture and previous_move
+            and move.to_square == previous_move.to_square):
+        return True
+
+    captured = position.piece_at(move.to_square) if is_capture else None
+    if (safe and captured and captured.piece_type in (chess.ROOK, chess.QUEEN)
+            and not position.attackers(captured.color, move.to_square)):
+        return True
+
+    if safe and move.promotion == chess.QUEEN:
+        return True
+
+    return False
+
+
+def is_great(played_move, best_move, best_wp, second_best_wp,
+             legal_move_count, position, is_book=False, is_mate=False,
+             is_brilliant=False, previous_move=None,
+             previous_move_was_capture=False):
+    return (
+        played_move == best_move
+        and is_unique_best(best_wp, second_best_wp)
+        and legal_move_count > 1
+        and not is_trivially_obvious(
+            played_move,
+            position,
+            legal_move_count=legal_move_count,
+            previous_move=previous_move,
+            previous_move_was_capture=previous_move_was_capture,
+        )
+        and not is_book
+        and not is_mate
+        and not is_brilliant
+    )
+
+
+def classify_move(prev_cp, curr_cp, is_great_move, is_sac, is_book,
+                  is_mate=False, is_miss=False):
     """Label one move, ranking the short-circuits before the eval ladder.
 
     Mate ends the game, so it outranks everything. A book move is established
@@ -210,9 +303,38 @@ def classify_move(prev_cp, curr_cp, is_only_move, is_sac, is_book, is_mate=False
         return "Excellent"
     if is_sac and cp_to_wp(curr_cp) > 0.20:
         return "Brilliant"
-    if is_only_move and cp_to_wp(curr_cp) > 0.10:
+    if is_great_move:
         return "Great"
     return "Best"
+
+
+def _previous_capture_context(board):
+    """Return exact previous-move capture context when board history exists."""
+    if not board.move_stack:
+        return None, False
+    previous_move = board.peek()
+    before_previous = board.copy(stack=True)
+    before_previous.pop()
+    return previous_move, before_previous.is_capture(previous_move)
+
+
+def _history_capture_context(position, uci_history):
+    """Replay standard-start history, failing closed when it does not match."""
+    if not uci_history:
+        return None, False
+    replay = chess.Board()
+    try:
+        for uci in uci_history:
+            move = chess.Move.from_uci(uci)
+            if move not in replay.legal_moves:
+                return None, False
+            replay.push(move)
+    except (TypeError, ValueError):
+        return None, False
+
+    if replay.fen() != position.fen():
+        return None, False
+    return _previous_capture_context(replay)
 
 
 def _hanging_pieces(board, color):
@@ -446,6 +568,7 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
     for game_node in game.mainline():
         move = game_node.move
         mover = board.turn
+        previous_move, previous_move_was_capture = _previous_capture_context(board)
         board_before = board.copy(stack=False)
         best_move = prev_info[0]["pv"][0] if prev_info[0].get("pv") else None
         best_line = _pv_to_san(board_before, prev_info[0].get("pv", []))
@@ -478,8 +601,24 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         else:
             prev_cp, curr_cp, second_cp = -prev_cp_white, -curr_cp_white, -second_cp_white
 
-        is_only_move = (cp_to_wp(prev_cp) - cp_to_wp(second_cp)) >= 0.20
+        best_wp = cp_to_wp(prev_cp)
+        second_best_wp = cp_to_wp(second_cp)
+        legal_move_count = board_before.legal_moves.count()
         is_book = stays_in_book and abs(curr_cp) < 80 and not is_sac
+        is_brilliant = is_sac and (is_mate_delivered or cp_to_wp(curr_cp) > 0.20)
+        great_candidate = is_great(
+            move,
+            best_move,
+            best_wp,
+            second_best_wp,
+            legal_move_count,
+            board_before,
+            is_book=is_book,
+            is_mate=is_mate_delivered,
+            is_brilliant=is_brilliant,
+            previous_move=previous_move,
+            previous_move_was_capture=previous_move_was_capture,
+        )
 
         eco, opening_name = lookup_opening(uci_history)
         if opening_name:
@@ -491,9 +630,11 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         phase = _game_phase(board, ply)
         eval_swing = abs((curr_cp - prev_cp) / 100)
 
-        base_class = classify_move(prev_cp, curr_cp, is_only_move, is_sac, is_book, is_mate_delivered)
+        base_class = classify_move(
+            prev_cp, curr_cp, great_candidate, is_sac, is_book, is_mate_delivered
+        )
         is_miss = is_miss_move(board_before, move, best_move, prev_cp, curr_cp, base_class)
-        classification = classify_move(prev_cp, curr_cp, is_only_move, is_sac, is_book,
+        classification = classify_move(prev_cp, curr_cp, great_candidate, is_sac, is_book,
                                        is_mate_delivered, is_miss=is_miss)
 
         cp_loss = min(1000, max(0, prev_cp - curr_cp))
@@ -525,6 +666,11 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
             "cp_loss": cp_loss,
             "best_line": best_line,
             "best_uci": best_move.uci() if best_move else None,
+            "best_move": best_move.uci() if best_move else None,
+            "played_move": move.uci(),
+            "best_wp": best_wp,
+            "second_best_wp": second_best_wp,
+            "legal_move_count": legal_move_count,
             "eval_swing": eval_swing,
             "phase": phase,
         }
@@ -629,7 +775,12 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
     else:
         prev_cp, curr_cp, second_cp = -prev_cp_white, -curr_cp_white, -second_cp_white
 
-    is_only_move = (cp_to_wp(prev_cp) - cp_to_wp(second_cp)) >= 0.20
+    best_wp = cp_to_wp(prev_cp)
+    second_best_wp = cp_to_wp(second_cp)
+    legal_move_count = board_before.legal_moves.count()
+    previous_move, previous_move_was_capture = _history_capture_context(
+        board_before, uci_history
+    )
 
     is_book = False
     opening_name = None
@@ -641,11 +792,26 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
                    and abs(curr_cp) < 80 and not is_sac)
         _, opening_name = lookup_opening([*uci_history, move.uci()])
 
+    is_brilliant = is_sac and (is_mate_delivered or cp_to_wp(curr_cp) > 0.20)
+    great_candidate = is_great(
+        move,
+        best_move,
+        best_wp,
+        second_best_wp,
+        legal_move_count,
+        board_before,
+        is_book=is_book,
+        is_mate=is_mate_delivered,
+        is_brilliant=is_brilliant,
+        previous_move=previous_move,
+        previous_move_was_capture=previous_move_was_capture,
+    )
+
     phase = _game_phase(board, ply)
-    base_class = classify_move(prev_cp, curr_cp, is_only_move, is_sac, is_book,
+    base_class = classify_move(prev_cp, curr_cp, great_candidate, is_sac, is_book,
                                is_mate_delivered)
     is_miss = is_miss_move(board_before, move, best_move, prev_cp, curr_cp, base_class)
-    classification = classify_move(prev_cp, curr_cp, is_only_move, is_sac, is_book,
+    classification = classify_move(prev_cp, curr_cp, great_candidate, is_sac, is_book,
                                    is_mate_delivered, is_miss=is_miss)
 
     facts, prompt_str = extract_facts(
@@ -669,6 +835,11 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
         "cp_loss": min(1000, max(0, prev_cp - curr_cp)),
         "best_line": best_line,
         "best_uci": best_move.uci() if best_move else None,
+        "best_move": best_move.uci() if best_move else None,
+        "played_move": move.uci(),
+        "best_wp": best_wp,
+        "second_best_wp": second_best_wp,
+        "legal_move_count": legal_move_count,
         "eval_swing": abs((curr_cp - prev_cp) / 100),
         "phase": phase,
     }

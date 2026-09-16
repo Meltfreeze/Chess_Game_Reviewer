@@ -6,6 +6,7 @@ import chess
 import chess.engine
 
 from backend.engine import (
+    _history_capture_context,
     _hanging_pieces,
     _multipv_signals,
     analyze_game_streaming,
@@ -136,6 +137,28 @@ class _SwingStubEngine(_StubEngine):
         ]
 
 
+class _GreatStubEngine(_StubEngine):
+    def analyse(self, board, _limit, multipv=2):
+        self.calls += 1
+        if self.calls == 1:
+            candidates = [
+                (chess.Move.from_uci("e2e4"), 20),
+                (chess.Move.from_uci("d2d4"), -150),
+            ]
+        else:
+            candidates = [
+                (move, 20 - index * 10)
+                for index, move in enumerate(list(board.legal_moves)[:multipv])
+            ]
+        return [
+            {
+                "score": chess.engine.PovScore(chess.engine.Cp(cp), chess.WHITE),
+                "pv": self._line(board, move),
+            }
+            for move, cp in candidates[:multipv]
+        ]
+
+
 def test_streaming_analysis_stays_serializable_without_extra_engine_calls():
     engine = _StubEngine()
     events = list(analyze_game_streaming("1. e4 e5", engine, depth=8))
@@ -143,7 +166,37 @@ def test_streaming_analysis_stays_serializable_without_extra_engine_calls():
 
     assert engine.calls == 3  # initial position plus one existing search per ply
     assert len(complete["move_data"]) == 2
+    for entry in complete["move_data"]:
+        assert entry["played_move"] == entry["uci"]
+        assert entry["best_move"] == entry["best_uci"]
+        assert 0.0 <= entry["best_wp"] <= 1.0
+        assert 0.0 <= entry["second_best_wp"] <= 1.0
+        assert entry["legal_move_count"] > 0
     json.dumps(complete)
+
+
+def test_history_capture_context_requires_a_matching_replay():
+    board = chess.Board()
+    history = ["e2e4", "d7d5", "e4d5"]
+    for uci in history:
+        board.push_uci(uci)
+
+    previous_move, was_capture = _history_capture_context(board, history)
+    assert previous_move == chess.Move.from_uci("e4d5")
+    assert was_capture
+
+    mismatched = chess.Board()
+    assert _history_capture_context(mismatched, history) == (None, False)
+
+
+def test_single_move_pipeline_emits_great_and_root_analysis_fields():
+    entry = analyze_move(chess.STARTING_FEN, "e2e4", _GreatStubEngine(), depth=8)
+
+    assert entry["classification"] == "Great"
+    assert entry["played_move"] == "e2e4"
+    assert entry["best_move"] == "e2e4"
+    assert entry["best_wp"] > entry["second_best_wp"]
+    assert entry["legal_move_count"] == 20
 
 
 def test_full_game_and_single_move_paths_expose_the_same_richer_facts():
