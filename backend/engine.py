@@ -229,9 +229,17 @@ def _hanging_pieces(board, color):
             if board.is_legal(cap):
                 best_gain = max(best_gain, static_exchange_eval(board, cap))
         if best_gain > 0:
-            out.append((NAMES[piece.piece_type], chess.square_name(sq), best_gain))
+            out.append((NAMES[piece.piece_type], chess.square_name(sq), best_gain,
+                        board.is_pinned(color, sq)))
     out.sort(key=lambda x: -x[2])
     return out
+
+
+def _format_hanging(hanging):
+    return [
+        f"{name} on {square}" + (" (pinned)" if pinned else "")
+        for name, square, _gain, pinned in hanging
+    ]
 
 
 def _pv_to_san(board, pv, max_plies=8):
@@ -246,8 +254,43 @@ def _pv_to_san(board, pv, max_plies=8):
     return san_line
 
 
+def _multipv_signals(board_before, prev_info, board_after, info):
+    """Reuse the two existing searches to expose concrete continuations.
+
+    ``info`` is the search after the played move, so its first PV starts with
+    the opponent's best reply. ``prev_info[1]`` is Stockfish's runner-up before
+    the move. No search is performed here; this helper only preserves and
+    checks data the caller already paid for.
+    """
+    forcing_line = []
+    if info and info[0].get("pv"):
+        line = _pv_to_san(board_after, info[0]["pv"], max_plies=4)
+        if len(line) >= 2:
+            forcing_line = line
+
+    runner_up = None
+    runner_up_hanging = []
+    if len(prev_info) > 1 and prev_info[1].get("pv"):
+        move = prev_info[1]["pv"][0]
+        if move in board_before.legal_moves:
+            runner_up = board_before.san(move)
+            after_runner_up = board_before.copy(stack=False)
+            after_runner_up.push(move)
+            runner_up_hanging = _format_hanging(
+                _hanging_pieces(after_runner_up, board_before.turn)
+            )[:2]
+
+    return {
+        "forcing_line": forcing_line,
+        "runner_up": runner_up,
+        "runner_up_hanging": runner_up_hanging,
+    }
+
+
 def extract_facts(board_before, move, best_move, eval_before_cp, eval_after_cp,
-                  classification, opp_reply_san=None, opening_name=None, phase=None):
+                  classification, opp_reply_san=None, opening_name=None, phase=None,
+                  is_sacrifice=False, best_line=None, forcing_line=None,
+                  runner_up=None, runner_up_hanging=None):
     mover = board_before.turn
     san = board_before.san(move)
     best_san = board_before.san(best_move) if best_move else None
@@ -264,6 +307,7 @@ def extract_facts(board_before, move, best_move, eval_before_cp, eval_after_cp,
         "is_check": board_before.gives_check(move),
         "is_castle": board_before.is_castling(move),
         "is_promo": move.promotion is not None,
+        "is_sacrifice": is_sacrifice,
         "best": best_san if best_san and best_san != san else None,
         "phase": phase or _game_phase(after, 0),
         "opening": opening_name,
@@ -284,14 +328,26 @@ def extract_facts(board_before, move, best_move, eval_before_cp, eval_after_cp,
 
     mistake_class = classification in ("Blunder", "Mistake", "Inaccuracy", "Miss")
     hanging_raw = _hanging_pieces(after, mover)
-    hanging = [(n, s, g) for (n, s, g) in hanging_raw if mistake_class or g >= 3]
-    facts["hanging"] = [f"{n} on {s}" for (n, s, g) in hanging[:2]]
+    hanging = [item for item in hanging_raw if mistake_class or item[2] >= 3]
+    facts["hanging"] = _format_hanging(hanging[:2])
 
     facts["refutation"] = None
-    if classification in ("Blunder", "Mistake") and opp_reply_san:
+    if classification in ("Blunder", "Mistake", "Inaccuracy") and opp_reply_san:
         facts["refutation"] = opp_reply_san
 
     facts["missed_best"] = facts["best"]
+
+    if (classification in ("Blunder", "Mistake", "Inaccuracy", "Miss")
+            and facts["best"] and best_line and len(best_line) >= 2):
+        facts["best_line"] = best_line[:4]
+
+    if classification in ("Blunder", "Mistake") and forcing_line:
+        facts["forcing_line"] = forcing_line[:4]
+
+    if classification == "Great" and runner_up:
+        facts["runner_up"] = runner_up
+        facts["runner_up_hanging"] = (runner_up_hanging or [])[:2]
+        facts["runner_up_fails"] = bool(facts["runner_up_hanging"])
 
     bits = [f'{san} ({classification}, eval {facts["eval_before"]:+}->{facts["eval_after"]:+})']
     if facts.get("phase"):
@@ -304,10 +360,14 @@ def extract_facts(board_before, move, best_move, eval_before_cp, eval_after_cp,
         bits.append("a capture")
     if facts["is_check"]:
         bits.append("gives check")
+    if facts["is_sacrifice"]:
+        bits.append("verified sacrifice")
     if facts.get("missed_capture"):
         bits.append(f'missed capture {facts["missed_capture"]}')
     if facts["best"]:
         bits.append(f'engine preferred {facts["best"]}')
+    if facts.get("best_line"):
+        bits.append("engine continuation: " + " ".join(facts["best_line"]))
     if facts.get("material_lost"):
         bits.append(f'lost {facts["material_lost"]} material value')
     if facts.get("king_in_check"):
@@ -316,6 +376,12 @@ def extract_facts(board_before, move, best_move, eval_before_cp, eval_after_cp,
         bits.append("leaves hanging: " + ", ".join(facts["hanging"]))
     if facts["refutation"]:
         bits.append(f'opponent can reply {facts["refutation"]}')
+    if facts.get("forcing_line"):
+        bits.append("forcing continuation: " + " ".join(facts["forcing_line"]))
+    if facts.get("runner_up"):
+        bits.append(f'runner-up was {facts["runner_up"]}')
+    if facts.get("runner_up_hanging"):
+        bits.append("runner-up leaves hanging: " + ", ".join(facts["runner_up_hanging"]))
     prompt_str = "; ".join(bits)
     return facts, prompt_str
 
@@ -398,6 +464,7 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         curr_cp_white = _score_white_cp(info[0])
         pov = info[0]["score"].white()
         eval_history.append(max(-10, min(10, curr_cp_white / 100)))
+        multipv_signals = _multipv_signals(board_before, prev_info, board, info)
 
         opp_reply_san = None
         if info[0].get("pv"):
@@ -439,7 +506,8 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
 
         facts, prompt_str = extract_facts(
             board_before, move, best_move, prev_cp, curr_cp,
-            classification, opp_reply_san, opening_name, phase)
+            classification, opp_reply_san, opening_name, phase,
+            is_sacrifice=is_sac, best_line=best_line, **multipv_signals)
 
         entry = {
             "ply": ply,
@@ -547,6 +615,7 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
     info = engine.analyse(board, limit, multipv=2)
     curr_cp_white = _score_white_cp(info[0])
     pov = info[0]["score"].white()
+    multipv_signals = _multipv_signals(board_before, prev_info, board, info)
 
     opp_reply_san = None
     if info[0].get("pv"):
@@ -581,7 +650,8 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
 
     facts, prompt_str = extract_facts(
         board_before, move, best_move, prev_cp, curr_cp,
-        classification, opp_reply_san, opening_name, phase)
+        classification, opp_reply_san, opening_name, phase,
+        is_sacrifice=is_sac, best_line=best_line, **multipv_signals)
 
     return {
         "ply": ply,

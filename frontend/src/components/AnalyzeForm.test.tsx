@@ -69,4 +69,16 @@ describe("AnalyzeForm depth selector", () => {
 
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
+
+  it("allows analysis with verified fallback coaching when Gemini is unavailable", async () => {
+    mockedFetchHealth.mockResolvedValue({ ready: true, gemini_configured: false });
+    render(<AnalyzeForm onAnalyze={vi.fn()} loading={false} />);
+
+    fireEvent.change(screen.getByPlaceholderText("Paste PGN here..."), {
+      target: { value: "1. e4 e5" },
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Review Game" })).toBeEnabled());
+    expect(screen.getByText(/verified fallback coaching/i)).toBeInTheDocument();
+  });
 });

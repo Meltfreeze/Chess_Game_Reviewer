@@ -87,7 +87,7 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
     );
   };
 
-  const canAnalyze = health?.ready && health?.gemini_configured && !loading && pgn.trim();
+  const canAnalyze = health?.ready && !loading && pgn.trim();
 
   return (
     <div className="bg-panel rounded-xl p-5 mb-6 border border-panelBorder">
@@ -179,7 +179,9 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
         <p className="text-red-400 text-sm mt-2">Stockfish not ready: {health.error || "binary missing"}</p>
       )}
       {health && !health.gemini_configured && (
-        <p className="text-amber-400 text-sm mt-2">Set GEMINI_API_KEY in .env for AI coaching.</p>
+        <p className="text-amber-400 text-sm mt-2">
+          Gemini is not configured; verified fallback coaching will be used.
+        </p>
       )}
 
       <button

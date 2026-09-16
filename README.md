@@ -1,89 +1,234 @@
 # AI Chess Game Reviewer
 
-A chess.com-style game review app: a FastAPI backend (Stockfish + Gemini) and a
-React frontend.
+A full-stack chess review app inspired by game-review products on major chess
+platforms. It analyzes a PGN with Stockfish, streams move-by-move results to a
+React interface, and adds concise coaching comments grounded exclusively in
+engine-verified facts.
 
-## Architecture
+## Features
 
+- Streams full-game Stockfish analysis over Server-Sent Events (SSE).
+- Classifies moves and calculates per-side accuracy and game summaries.
+- Explains notable moves using verified tactical and positional facts.
+- Uses Gemini optionally for prose; deterministic coaching remains available
+  when Gemini is disabled or rejects an unsupported response.
+- Supports click-to-move, drag-to-move, alternate-line exploration, and branch
+  navigation on an interactive board.
+- Keeps selections, legal-move indicators, captures, last-move highlights,
+  coordinates, and input mapping correct when the board is flipped.
+- Includes evaluation bars and graphs, move navigation, move-classification
+  badges, and configurable analysis depth.
+- Protects engine-heavy endpoints with a shared-secret, stateless token flow.
+
+## How analysis works
+
+```text
+Browser
+  -> authenticate with the configured shared secret
+  -> submit a PGN to /api/analyze
+  -> receive incremental SSE results
+  -> render the board, move tree, evaluations, and coaching
+
+Backend
+  -> serialize Stockfish access through AnalysisService
+  -> analyze each position with MultiPV=2
+  -> classify moves and derive verified facts in engine.py
+  -> turn those facts into prose in coach.py
+  -> reject unsupported or unjustified LLM comments
+  -> use a deterministic fact-based comment when validation fails
 ```
-backend/   FastAPI app. Stockfish is the only source of chess truth;
-           Gemini only rephrases facts the engine has already verified.
-frontend/  React + Vite + TypeScript SPA. Talks to the backend over HTTP/SSE.
-icons/     Move-classification badge images, served by the backend.
+
+Stockfish and `python-chess` are the only sources of chess truth. Gemini does
+not analyze positions independently: it receives facts already proved by the
+engine, and its output is checked for unsupported pieces/squares and for a
+concrete citation on notable moves. This includes engine continuations,
+opponent replies, missed captures, hanging or pinned pieces, sacrifices, and
+runner-up moves where relevant.
+
+Analysis results and generated coaching are cached in memory. The app does not
+currently use a database, so caches reset whenever the backend process restarts.
+
+## Repository structure
+
+```text
+backend/                 FastAPI API, Stockfish analysis, and coaching
+  main.py                Routes, validation, authentication, and SSE streaming
+  engine.py              Evaluation, move classification, and verified facts
+  coach.py               Gemini prompting, validation, and fallback comments
+  analysis_service.py    Shared engine lifecycle, locking, and result cache
+  auth.py                HMAC-signed shared-secret authentication tokens
+  config.py              Environment settings and Stockfish discovery
+  openings.py            ECO opening lookup
+  data/openings.tsv      Opening data used by the lookup module
+  tests/                  Backend unit and integration-style tests
+  tools/build_openings.py Opening-data build utility
+  Dockerfile             Production backend image
+
+frontend/                React, TypeScript, Vite, and Tailwind SPA
+  src/App.tsx             Top-level review and analysis state
+  src/moveTree.ts         Main-line and alternate-variation navigation
+  src/api/                Authentication and typed backend clients
+  src/components/         Board, navigation, evaluation, moves, and coaching UI
+  src/types.ts            Shared frontend response and move-fact types
+  public/pieces/          Chess-piece images served by Vite/Vercel
+  vercel.json             SPA routing configuration
+
+icons/                   Move-classification badges served by the backend
+pieces/                  Source copy of the chess-piece artwork
 ```
-
-| File | Purpose |
-|------|---------|
-| `backend/main.py` | FastAPI app: `/api/health`, `/api/position`, `/api/analyze` (SSE), `/api/icons/{name}` |
-| `backend/engine.py` | All chess analysis: SEE/sacrifice detection, move classification, critical moments |
-| `backend/coach.py` | Turns engine-verified facts into text (a single batched Gemini call per game) |
-| `backend/analysis_service.py` | Singleton Stockfish process wrapper + in-memory analysis cache |
-| `backend/config.py` | Resolves the Stockfish binary path and reads config from the environment |
-| `backend/openings.py` | ECO opening-name lookup |
-| `frontend/src/App.tsx` | Owns analysis state, wires the board/eval bar/eval graph/move list/coach panel together |
-| `frontend/src/api/client.ts` | Typed fetch wrappers for the backend API, including SSE parsing |
-| `frontend/src/components/` | Presentational board, move list, eval bar/graph, and coach panel |
-
-### Why Gemini can't hallucinate
-`backend/engine.py` computes every fact from `python-chess` + Stockfish first —
-the engine's preferred move, what is *actually* hanging (verified with a static
-exchange evaluation), whether the move was a capture/check/castle, and the
-opponent's concrete refutation. Gemini receives only those verified facts and is
-instructed to rephrase them, never invent new ones; `backend/coach.py` validates
-the response only uses vocabulary drawn from those facts. Only "notable" moves
-(blunders, mistakes, brilliancies, misses, etc.) are sent to Gemini, batched into
-a single request per game, and cached — reopening a game costs zero calls.
 
 ## Local development
 
-```bash
-# Backend (terminal 1)
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn backend.main:app --reload   # http://127.0.0.1:8000
+### Prerequisites
 
-# Frontend (terminal 2)
-cd frontend
-npm install
-npm run dev                         # http://localhost:5173
+- Python 3.11 or newer
+- Node.js 18 or newer and npm
+- A Stockfish executable compatible with your operating system
+- Git LFS if you need the repository's Linux Stockfish binary
+
+### 1. Configure the backend
+
+Create `.env` in the repository root:
+
+```dotenv
+AUTH_SECRET=choose-a-strong-shared-password
+STOCKFISH_PATH=C:\path\to\stockfish.exe
+
+# Optional: enables Gemini-written comments after fact validation.
+GEMINI_API_KEY=
 ```
 
-The Vite dev server proxies `/api` to `http://127.0.0.1:8000` (see
-`frontend/vite.config.ts`), so no extra frontend config is needed locally.
+`AUTH_SECRET` is required. Protected endpoints fail closed when it is missing.
+`STOCKFISH_PATH` can be omitted if a supported binary exists at the repository
+root or `stockfish` is available on `PATH`.
 
-### Stockfish
+Create the environment and install dependencies:
 
-The `stockfish` binary committed at the repo root via Git LFS is a **Linux**
-build (for cloud/Docker deployment) — it will not run on macOS or Windows.
-For local development, install Stockfish for your OS (e.g. `brew install
-stockfish` on macOS) and set `STOCKFISH_PATH` in `.env` to its location.
-`backend/config.py` resolution order: `STOCKFISH_PATH` env var → a binary
-named `stockfish`/`stockfish-ubuntu-x86-64`/`stockfish-linux` (or the
-`.exe` equivalents on Windows) at the repo root → `stockfish` on `PATH`.
+```powershell
+# Windows PowerShell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt -r requirements-dev.txt
+python -m uvicorn backend.main:app --reload
+```
 
-To pull the real Linux binary from Git LFS: `git lfs install --local && git lfs pull`.
+```bash
+# macOS/Linux
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+python -m uvicorn backend.main:app --reload
+```
 
-### Environment variables
+The API is available at `http://127.0.0.1:8000`.
 
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `GEMINI_API_KEY` | Yes, for coaching | Gemini API key used by `backend/coach.py` |
-| `STOCKFISH_PATH` | No | Absolute path to a Stockfish binary, overrides auto-detection |
-| `ANALYSIS_DEPTH` | No | Default engine search depth (default `14`) |
-| `ALLOWED_ORIGINS` | No | Comma-separated list of origins the backend accepts CORS requests from (default `http://localhost:5173,http://127.0.0.1:5173`); use `*` to allow any origin |
-| `VITE_API_BASE_URL` | No | Set in the frontend build/env to point at a deployed backend URL instead of the relative `/api` dev-proxy path |
+### 2. Start the frontend
+
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. Vite proxies `/api` to
+`http://127.0.0.1:8000`, so `VITE_API_BASE_URL` is not needed locally.
+
+### Stockfish discovery
+
+`backend/config.py` resolves Stockfish in this order:
+
+1. A valid `STOCKFISH_PATH`.
+2. A platform-appropriate binary at the repository root.
+3. `stockfish` on `PATH`.
+
+The Git LFS binary at the repository root is for Linux deployment and will not
+run natively on Windows or macOS. To retrieve it:
+
+```bash
+git lfs install --local
+git lfs pull
+```
+
+## Configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AUTH_SECRET` | none | Required shared password used to issue signed access tokens. |
+| `AUTH_TOKEN_TTL_SECONDS` | `43200` | Authentication token lifetime in seconds. |
+| `STOCKFISH_PATH` | auto-detected | Absolute path to a Stockfish executable. |
+| `ANALYSIS_DEPTH` | `14` | Default search depth; API requests accept depths from 8 through 22. |
+| `ENGINE_TIME_LIMIT_SECONDS` | `10` | Per-search Stockfish time ceiling. |
+| `ENGINE_LOCK_TIMEOUT_SECONDS` | `45` | Maximum wait for the shared engine lock. |
+| `GEMINI_API_KEY` | none | Enables optional Gemini phrasing of verified coaching facts. |
+| `ALLOWED_ORIGINS` | local Vite origins | Comma-separated CORS origins; `*` allows any origin. |
+| `VITE_API_BASE_URL` | relative `/api` | Backend origin used by a deployed frontend build. |
+| `PORT` | `8000` | Port used by the backend container command. |
+
+Keep backend secrets in the backend deployment environment. Do not expose
+`AUTH_SECRET` or `GEMINI_API_KEY` through `VITE_` variables.
+
+## API
+
+| Method | Route | Auth | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/auth` | Public | Exchange the shared password for a short-lived bearer token. |
+| `GET` | `/api/health` | Public | Report API and engine availability. |
+| `GET` | `/api/icons/{name}` | Public | Serve a move-classification badge. |
+| `GET` | `/api/position` | Bearer | Return a validated position and legal moves for a move history. |
+| `POST` | `/api/analyze` | Bearer | Stream a complete PGN review as SSE events. |
+| `POST` | `/api/move-review` | Bearer | Analyze one explored move or variation. |
+
+Authentication is deliberately lightweight: the password is compared on the
+backend, and successful login returns an expiring HMAC-signed token kept in the
+browser session. It is suitable for controlling access to a private deployment,
+not as a multi-user account or authorization system.
+
+## Testing and verification
+
+Run the backend suite from the repository root:
+
+```powershell
+.venv\Scripts\python.exe -m pytest
+```
+
+Run frontend tests and the production typecheck/build:
+
+```bash
+cd frontend
+npm test
+npm run build
+```
+
+The backend tests cover authentication, move classification, openings,
+verified engine facts, coaching validation, deterministic fallbacks, and SSE
+serialization. Frontend tests cover the analysis form and core review controls.
 
 ## Deployment
 
-- **Frontend**: deploy `frontend/` to Vercel (set the project root to
-  `frontend/`; `frontend/vercel.json` handles the SPA rewrite). Set
-  `VITE_API_BASE_URL` to the deployed backend's URL.
-- **Backend**: containerize with `backend/Dockerfile` (build from the repo
-  root: `docker build -f backend/Dockerfile -t chess-backend .`) and deploy
-  to any container host. Set `GEMINI_API_KEY` and `ALLOWED_ORIGINS` (pointing
-  back at the deployed frontend origin) as environment variables on that host.
+### Backend on Render
 
-## Possible next steps
-- Opening moves are labeled "Book" via `backend/openings.py`'s small ECO
-  lookup table — extend it for a fuller opening database.
-- No automated tests yet.
+Deploy from the repository root using `backend/Dockerfile`. The image installs
+Stockfish, copies the backend and classification icons, and starts Uvicorn on
+`PORT`.
+
+Configure at least:
+
+- `AUTH_SECRET`
+- `ALLOWED_ORIGINS` with the deployed frontend origin
+- `GEMINI_API_KEY` if Gemini-authored coaching is desired
+
+The backend holds one shared engine process and an in-memory cache. Render cold
+starts restart both, and horizontal instances do not share cached results.
+
+### Frontend on Vercel
+
+Create a Vercel project with `frontend/` as its root directory, then set:
+
+```dotenv
+VITE_API_BASE_URL=https://your-backend.example.com
+```
+
+`frontend/vercel.json` rewrites application routes to `index.html` for SPA
+navigation. Add the final Vercel origin to the backend's `ALLOWED_ORIGINS`.

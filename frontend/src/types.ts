@@ -18,10 +18,16 @@ export interface MoveFacts {
   is_capture?: boolean;
   is_check?: boolean;
   is_castle?: boolean;
+  is_sacrifice?: boolean;
   best?: string | null;
+  best_line?: string[];
   hanging?: string[];
   refutation?: string | null;
+  forcing_line?: string[];
   missed_capture?: string;
+  runner_up?: string;
+  runner_up_hanging?: string[];
+  runner_up_fails?: boolean;
   phase?: string;
   opening?: string | null;
 }

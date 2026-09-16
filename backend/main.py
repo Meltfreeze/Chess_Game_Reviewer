@@ -185,11 +185,6 @@ def _sse_event(event_type, data):
 @app.post("/api/analyze", dependencies=[Depends(require_auth)])
 def analyze_game(req: AnalyzeRequest):
     gemini = _get_gemini()
-    if gemini is None:
-        raise HTTPException(
-            status_code=400,
-            detail="GEMINI_API_KEY is required. Set it in .env or environment.",
-        )
 
     def stream():
         try:
@@ -249,7 +244,7 @@ def analyze_game(req: AnalyzeRequest):
 def move_review(req: MoveReviewRequest):
     """Review one move played from an arbitrary position (variation exploration).
 
-    Unlike /api/analyze this does not require Gemini — generate_move_comment
+    Like /api/analyze, this does not require Gemini — generate_move_comment
     falls back to the fact-based template when the key is missing or the free
     tier rate-limits us, so board exploration keeps working either way.
     """

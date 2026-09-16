@@ -1,6 +1,6 @@
 """
 coach.py — Turns VERIFIED facts (from engine.py) into friendly text.
-Gemini is required; output is validated against engine facts.
+Gemini output is validated against engine facts; deterministic prose is the fallback.
 """
 
 import json
@@ -26,16 +26,25 @@ _SQUARE_RE = re.compile(r"\b[a-h][1-8]\b")
 def template_comment(move):
     f = move["facts"]
     cls = move["classification"]
-    san = f["played"]
 
     if cls in _POSITIVE:
         base = _POSITIVE[cls]
-        if cls == "Brilliant" and f.get("is_capture"):
+        if cls in ("Brilliant", "Good") and f.get("is_sacrifice"):
             base = "Brilliant! A bold sacrifice that the engine confirms is strong."
+            if cls == "Good":
+                base = "A sound sacrifice that keeps the position healthy."
         if cls == "Miss" and f.get("missed_capture"):
             base = f"You missed the tactic {f['missed_capture']}."
+        elif cls == "Miss" and f.get("best_line"):
+            base = f"You missed the stronger continuation {' '.join(f['best_line'])}."
         elif cls == "Miss" and f.get("best"):
-            base = f"You missed {f['best']} — a stronger continuation."
+            base = f"You missed {f['best']} — a stronger move."
+        elif cls == "Great" and f.get("runner_up_hanging"):
+            base = (f"Great find — the runner-up {f['runner_up']} would leave your "
+                    f"{f['runner_up_hanging'][0]} vulnerable.")
+        elif cls == "Great" and f.get("runner_up"):
+            base = (f"Great find — even the engine's runner-up {f['runner_up']} was "
+                    "not enough to hold the position as well.")
         return base
 
     parts = []
@@ -46,14 +55,29 @@ def template_comment(move):
     else:
         parts.append("A slight inaccuracy.")
 
+    reason = None
     if f.get("hanging"):
-        parts.append(f"It leaves your {f['hanging'][0]} undefended.")
-    if f.get("refutation"):
-        parts.append(f"The opponent can answer with {f['refutation']}.")
-    if f.get("best"):
-        parts.append(f"{f['best']} was stronger.")
-    if f.get("missed_capture"):
-        parts.append(f"You could have played {f['missed_capture']}.")
+        hanging = f["hanging"][0]
+        if "(pinned)" in hanging:
+            reason = f"It leaves your {hanging.replace(' (pinned)', '')} pinned and hanging."
+        else:
+            reason = f"It leaves your {hanging} vulnerable."
+    elif f.get("forcing_line"):
+        reason = f"The forcing continuation is {' '.join(f['forcing_line'])}."
+    elif f.get("missed_capture"):
+        reason = f"You could have played {f['missed_capture']}."
+    elif f.get("best_line"):
+        reason = f"The engine preferred {' '.join(f['best_line'])}."
+    elif f.get("refutation"):
+        reason = f"The opponent can answer with {f['refutation']}."
+    elif f.get("best"):
+        reason = f"{f['best']} was stronger."
+    elif f.get("king_in_check"):
+        reason = "It leaves your king exposed to check."
+    elif f.get("is_sacrifice"):
+        reason = "The engine confirms this was a sacrifice that did not work."
+    if reason:
+        parts.append(reason)
     return " ".join(parts)
 
 
@@ -64,10 +88,18 @@ _SYSTEM = (
     "facts; name a move by the exact notation given (e.g. Nf3) rather than a piece "
     "type the facts do not name. No jargon dumps. Output strict JSON only.\n"
     "Blunder/Mistake/Inaccuracy/Miss/Great/Brilliant: say what happened and briefly "
-    "why, citing the fact that explains it (hanging piece, opponent's reply, missed "
-    "capture, the move the engine preferred, whether it was a capture). "
+    "why. A label by itself is invalid. Cite the most concrete available verified "
+    "fact in this order: a pinned hanging piece; a forcing continuation; a missed "
+    "capture; the engine's preferred continuation; the runner-up and why it fails; "
+    "a verified sacrifice. The opponent's best reply is also a concrete reason when "
+    "no richer continuation is available, including for Inaccuracies. "
+    "'engine continuation' is "
+    "Stockfish's line after its preferred move. 'forcing continuation' starts with "
+    "the opponent's best reply. 'runner-up leaves hanging' explains why the Great "
+    "move was uniquely necessary. "
     "Max 2 sentences.\n"
-    "Good/Best/Excellent/Book: exactly one plain sentence, no reasoning.\n"
+    "Good/Best/Excellent/Book: exactly one plain sentence, no reasoning, except that "
+    "a Good verified sacrifice may say it was a sacrifice.\n"
     "Never open or pad a comment with the game phase ('in the opening', 'in the "
     "middlegame', 'in the endgame') — mention phase only when it is essential to "
     "the point being made."
@@ -92,10 +124,54 @@ def _allowed_tokens(prompt_str):
     return tokens
 
 
-def _validate_comment(comment, prompt_str):
-    """Reject Gemini output that mentions pieces/squares absent from facts."""
-    if not comment or len(comment) > 500:
+def _citation_tokens(facts):
+    """Concrete verified tokens a notable comment may use as its reason."""
+    tokens = set()
+
+    def add_squares(value):
+        if isinstance(value, str):
+            tokens.update(_SQUARE_RE.findall(value.lower()))
+        elif isinstance(value, list):
+            for item in value:
+                add_squares(item)
+
+    for key in ("best", "best_line", "refutation", "missed_capture",
+                "runner_up", "forcing_line"):
+        add_squares(facts.get(key))
+
+    hanging = [*(facts.get("hanging") or []),
+               *(facts.get("runner_up_hanging") or [])]
+    for item in hanging:
+        lower = item.lower()
+        add_squares(lower)
+        for word in _PIECE_WORDS:
+            if word in lower:
+                tokens.add(word)
+        if "pinned" in lower:
+            tokens.add("pinned")
+
+    if facts.get("is_sacrifice"):
+        tokens.add("sacrifice")
+    if facts.get("king_in_check"):
+        tokens.add("check")
+    return tokens
+
+
+def _has_verified_citation(comment, move):
+    if move["classification"] not in NOTABLE:
+        return True
+    available = _citation_tokens(move["facts"])
+    if not available:
+        return True
+    lower = comment.lower()
+    return any(re.search(rf"\b{re.escape(token)}\b", lower) for token in available)
+
+
+def _validate_comment(comment, move):
+    """Reject hallucinations and unjustified notable-move commentary."""
+    if not isinstance(comment, str) or not comment or len(comment) > 500:
         return False
+    prompt_str = move["prompt_str"]
     lower = comment.lower()
     allowed = _allowed_tokens(prompt_str)
     for word in _PIECE_WORDS:
@@ -104,7 +180,7 @@ def _validate_comment(comment, prompt_str):
     for sq in _SQUARE_RE.findall(lower):
         if sq not in allowed and sq not in prompt_str.lower():
             return False
-    return True
+    return _has_verified_citation(comment, move)
 
 
 def _select_notable(move_data, critical_moments=None, cap=24):
@@ -146,13 +222,15 @@ def generate_coach(move_data, player_color, gemini_client, critical_moments=None
     if key in _cache:
         return _cache[key]
 
-    if gemini_client is None:
-        raise ValueError("GEMINI_API_KEY is required for game review coaching")
-
     comments = [template_comment(m) for m in move_data]
     notable = _select_notable(move_data, critical_moments)
     brief = _select_brief(move_data, notable)
     summary = _fallback_summary(move_data, player_color)
+
+    if gemini_client is None:
+        result = (summary, comments)
+        _cache[key] = result
+        return result
 
     payload_notable = [{"id": i, "classification": move_data[i]["classification"],
                         "facts": move_data[i]["prompt_str"]} for i in notable]
@@ -187,19 +265,21 @@ def generate_coach(move_data, player_color, gemini_client, critical_moments=None
         for k, v in data.get("comments", {}).items():
             try:
                 idx = int(k)
-                if _validate_comment(v, move_data[idx]["prompt_str"]):
+                if _validate_comment(v, move_data[idx]):
                     comments[idx] = v
             except (ValueError, IndexError):
                 pass
         for k, v in data.get("brief", {}).items():
             try:
                 idx = int(k)
-                if _validate_comment(v, move_data[idx]["prompt_str"]):
+                if _validate_comment(v, move_data[idx]):
                     comments[idx] = v
             except (ValueError, IndexError):
                 pass
-    except Exception as exc:
-        raise ValueError(f"Gemini coaching failed: {exc}") from exc
+    except Exception:
+        # The deterministic comments above are the safe default. A failed API
+        # call or malformed response must degrade to them, not break review.
+        pass
 
     result = (summary, comments)
     _cache[key] = result
@@ -249,7 +329,7 @@ def generate_move_comment(move, gemini_client, model="gemini-2.5-flash", _cache=
                 ),
             )
             candidate = json.loads(resp.text.strip()).get("comment")
-            if _validate_comment(candidate, move["prompt_str"]):
+            if _validate_comment(candidate, move):
                 comment = candidate
         except Exception:
             pass
