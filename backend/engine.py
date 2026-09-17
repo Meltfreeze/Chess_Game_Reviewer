@@ -23,6 +23,10 @@ BACK_RANK = {chess.WHITE: 7, chess.BLACK: 0}
 
 NOTABLE = {"Blunder", "Mistake", "Inaccuracy", "Brilliant", "Great", "Miss"}
 CRITICAL_CLASSES = {"Blunder", "Brilliant", "Miss", "Mistake"}
+BRILLIANT_PIECES = {chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN}
+BRILLIANT_MIN_SACRIFICE = 2
+BRILLIANT_MIN_WIN_PROBABILITY = 0.20
+BRILLIANT_VERIFICATION_TOLERANCE = 0.02
 
 
 def _promoted_type(piece_type, color, square, forced_promotion=None):
@@ -94,11 +98,8 @@ def static_exchange_eval(board, move):
 
 
 def is_sacrifice(board, move):
-    if not board.piece_at(move.from_square):
-        return False
-    if not board.attackers(not board.turn, move.to_square):
-        return False
-    return static_exchange_eval(board, move) < 0
+    """Return whether a move passes the cheap, structural sacrifice gate."""
+    return _sacrifice_candidate(board, move)["candidate"]
 
 
 def cp_to_wp(cp):
@@ -201,17 +202,246 @@ def _piece_is_hanging(board, square, color):
     if not piece or piece.color != color or piece.piece_type == chess.KING:
         return False
 
-    for attacker_square in board.attackers(not color, square):
-        attacker = board.piece_at(attacker_square)
+    capture_board = board
+    if board.turn == color:
+        capture_board = board.copy(stack=False)
+        capture_board.turn = not color
+
+    for attacker_square in capture_board.attackers(not color, square):
+        attacker = capture_board.piece_at(attacker_square)
         promotions = [None]
         if (attacker and attacker.piece_type == chess.PAWN
                 and chess.square_rank(square) == BACK_RANK[attacker.color]):
             promotions = [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]
         for promotion in promotions:
             capture = chess.Move(attacker_square, square, promotion=promotion)
-            if board.is_legal(capture) and static_exchange_eval(board, capture) > 0:
+            if (capture_board.is_legal(capture)
+                    and static_exchange_eval(capture_board, capture) > 0):
                 return True
     return False
+
+
+def _material_balance(board, color):
+    return _material_count(board, color) - _material_count(board, not color)
+
+
+def _captures_offered_piece(board_after, offered_square):
+    return [
+        move
+        for move in board_after.legal_moves
+        if board_after.is_capture(move) and move.to_square == offered_square
+    ]
+
+
+def _sacrifice_candidate(position, move):
+    evidence = {
+        "candidate": False,
+        "verified": False,
+        "piece": None,
+        "sacrifice_cost": 0,
+        "accepted_in_main_pv": False,
+        "verified_by_forced_capture": False,
+        "maximum_material_deficit": 0,
+        "capture_wp": None,
+        "reason": None,
+    }
+
+    if move not in position.legal_moves:
+        evidence["reason"] = "illegal_move"
+        return evidence
+
+    mover = position.turn
+    piece = position.piece_at(move.from_square)
+    if not piece or piece.piece_type not in BRILLIANT_PIECES:
+        evidence["reason"] = "ineligible_piece"
+        return evidence
+    evidence["piece"] = NAMES[piece.piece_type]
+
+    if _piece_is_hanging(position, move.from_square, mover):
+        evidence["reason"] = "piece_already_hanging"
+        return evidence
+
+    sacrifice_cost = -static_exchange_eval(position, move)
+    evidence["sacrifice_cost"] = sacrifice_cost
+    if sacrifice_cost < BRILLIANT_MIN_SACRIFICE:
+        evidence["reason"] = "insufficient_material_investment"
+        return evidence
+
+    after = position.copy(stack=False)
+    after.push(move)
+    if not _captures_offered_piece(after, move.to_square):
+        evidence["reason"] = "offered_piece_not_legally_capturable"
+        return evidence
+
+    evidence["candidate"] = True
+    return evidence
+
+
+def _maximum_material_deficit(position, move, continuation):
+    mover = position.turn
+    baseline = _material_balance(position, mover)
+    scratch = position.copy(stack=False)
+    scratch.push(move)
+    maximum = max(0, baseline - _material_balance(scratch, mover))
+
+    for future_move in continuation:
+        if future_move not in scratch.legal_moves:
+            break
+        scratch.push(future_move)
+        maximum = max(maximum, baseline - _material_balance(scratch, mover))
+    return maximum
+
+
+def _score_mover_cp(info, mover):
+    white_cp = _score_white_cp(info)
+    return white_cp if mover == chess.WHITE else -white_cp
+
+
+def verify_sacrifice(position, move, post_move_info, engine, limit, best_wp):
+    """Verify material investment through Stockfish's future continuations.
+
+    The normal post-move PV is free because the analysis pipeline already paid
+    for it. When Stockfish declines the offer, one same-depth search restricted
+    to legal captures checks the counterfactual acceptance line.
+    """
+    evidence = _sacrifice_candidate(position, move)
+    if not evidence["candidate"]:
+        return evidence
+
+    mover = position.turn
+    after = position.copy(stack=False)
+    after.push(move)
+    capture_moves = _captures_offered_piece(after, move.to_square)
+    main_pv = post_move_info[0].get("pv", []) if post_move_info else []
+
+    if main_pv and main_pv[0] in capture_moves:
+        evidence["accepted_in_main_pv"] = True
+        evidence["maximum_material_deficit"] = _maximum_material_deficit(
+            position, move, main_pv
+        )
+        evidence["verified"] = (
+            evidence["maximum_material_deficit"] >= BRILLIANT_MIN_SACRIFICE
+        )
+        evidence["reason"] = None if evidence["verified"] else "no_material_deficit"
+        return evidence
+
+    forced_result = engine.analyse(
+        after,
+        limit,
+        multipv=1,
+        root_moves=capture_moves,
+    )
+    forced_info = forced_result[0] if isinstance(forced_result, list) else forced_result
+    forced_pv = forced_info.get("pv", [])
+    if not forced_pv or forced_pv[0] not in capture_moves:
+        evidence["reason"] = "forced_capture_line_unavailable"
+        return evidence
+
+    evidence["maximum_material_deficit"] = _maximum_material_deficit(
+        position, move, forced_pv
+    )
+    evidence["capture_wp"] = cp_to_wp(_score_mover_cp(forced_info, mover))
+    evidence["verified_by_forced_capture"] = True
+    evidence["verified"] = (
+        evidence["maximum_material_deficit"] >= BRILLIANT_MIN_SACRIFICE
+        and evidence["capture_wp"] >= best_wp - BRILLIANT_VERIFICATION_TOLERANCE
+    )
+    if evidence["verified"]:
+        evidence["reason"] = None
+    elif evidence["maximum_material_deficit"] < BRILLIANT_MIN_SACRIFICE:
+        evidence["reason"] = "no_material_deficit"
+    else:
+        evidence["reason"] = "capture_refutes_sacrifice"
+    return evidence
+
+
+def is_trivially_obvious_brilliant(move, position, legal_move_count,
+                                    is_mate=False, previous_move=None,
+                                    previous_move_was_capture=False):
+    if legal_move_count <= 1 or is_mate or move.promotion is not None:
+        return True
+    if (previous_move_was_capture and previous_move
+            and position.is_capture(move)
+            and move.to_square == previous_move.to_square):
+        return True
+
+    captured = position.piece_at(move.to_square) if position.is_capture(move) else None
+    return bool(
+        captured
+        and captured.piece_type in (chess.ROOK, chess.QUEEN)
+        and not position.attackers(captured.color, move.to_square)
+    )
+
+
+def is_brilliant(played_move, best_move, best_wp, legal_move_count, position,
+                 sacrifice_evidence, is_book=False, is_mate=False,
+                 previous_move=None, previous_move_was_capture=False):
+    return (
+        played_move == best_move
+        and best_wp > BRILLIANT_MIN_WIN_PROBABILITY
+        and legal_move_count > 1
+        and sacrifice_evidence["verified"]
+        and not is_book
+        and not is_mate
+        and not is_trivially_obvious_brilliant(
+            played_move,
+            position,
+            legal_move_count,
+            is_mate=is_mate,
+            previous_move=previous_move,
+            previous_move_was_capture=previous_move_was_capture,
+        )
+    )
+
+
+def evaluate_brilliant(position, played_move, best_move, best_wp,
+                       legal_move_count, is_book, is_mate, post_move_info,
+                       engine, limit, previous_move=None,
+                       previous_move_was_capture=False):
+    """Return the Brilliant decision and its verified sacrifice evidence."""
+    evidence = _sacrifice_candidate(position, played_move)
+    if not evidence["candidate"]:
+        return False, evidence
+    if played_move != best_move:
+        evidence["reason"] = "not_engine_best"
+        return False, evidence
+    if best_wp <= BRILLIANT_MIN_WIN_PROBABILITY:
+        evidence["reason"] = "position_not_viable"
+        return False, evidence
+    if is_book:
+        evidence["reason"] = "book_move"
+        return False, evidence
+    if is_trivially_obvious_brilliant(
+        played_move,
+        position,
+        legal_move_count,
+        is_mate=is_mate,
+        previous_move=previous_move,
+        previous_move_was_capture=previous_move_was_capture,
+    ):
+        evidence["reason"] = "trivially_obvious"
+        return False, evidence
+
+    evidence = verify_sacrifice(
+        position,
+        played_move,
+        post_move_info,
+        engine,
+        limit,
+        best_wp,
+    )
+    return is_brilliant(
+        played_move,
+        best_move,
+        best_wp,
+        legal_move_count,
+        position,
+        evidence,
+        is_book=is_book,
+        is_mate=is_mate,
+        previous_move=previous_move,
+        previous_move_was_capture=previous_move_was_capture,
+    ), evidence
 
 
 def _move_is_safe(board, move):
@@ -274,7 +504,7 @@ def is_great(played_move, best_move, best_wp, second_best_wp,
     )
 
 
-def classify_move(prev_cp, curr_cp, is_great_move, is_sac, is_book,
+def classify_move(prev_cp, curr_cp, is_great_move, is_brilliant_move, is_book,
                   is_mate=False, is_miss=False):
     """Label one move, ranking the short-circuits before the eval ladder.
 
@@ -284,11 +514,9 @@ def classify_move(prev_cp, curr_cp, is_great_move, is_sac, is_book,
     moves.
     """
     if is_mate:
-        return "Brilliant" if is_sac else "Best"
+        return "Best"
     if is_book:
         return "Book"
-    if is_miss:
-        return "Miss"
     wp_loss = cp_to_wp(prev_cp) - cp_to_wp(curr_cp)
 
     if wp_loss >= 0.20:
@@ -297,14 +525,16 @@ def classify_move(prev_cp, curr_cp, is_great_move, is_sac, is_book,
         return "Mistake"
     if wp_loss >= 0.06:
         return "Inaccuracy"
+    if is_miss:
+        return "Miss"
+    if is_brilliant_move:
+        return "Brilliant"
+    if is_great_move:
+        return "Great"
     if wp_loss >= 0.03:
         return "Good"
     if wp_loss >= 0.02:
         return "Excellent"
-    if is_sac and cp_to_wp(curr_cp) > 0.20:
-        return "Brilliant"
-    if is_great_move:
-        return "Great"
     return "Best"
 
 
@@ -574,7 +804,6 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         best_line = _pv_to_san(board_before, prev_info[0].get("pv", []))
         san = board.san(move)
 
-        is_sac = is_sacrifice(board, move)
         stays_in_book = is_book_move(uci_history, move.uci())
         second_cp_white = (_score_white_cp(prev_info[1])
                            if len(prev_info) > 1 else prev_cp_white)
@@ -604,8 +833,21 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         best_wp = cp_to_wp(prev_cp)
         second_best_wp = cp_to_wp(second_cp)
         legal_move_count = board_before.legal_moves.count()
-        is_book = stays_in_book and abs(curr_cp) < 80 and not is_sac
-        is_brilliant = is_sac and (is_mate_delivered or cp_to_wp(curr_cp) > 0.20)
+        is_book = stays_in_book and abs(curr_cp) < 80
+        brilliant_candidate, sacrifice_evidence = evaluate_brilliant(
+            board_before,
+            move,
+            best_move,
+            best_wp,
+            legal_move_count,
+            is_book,
+            is_mate_delivered,
+            info,
+            engine,
+            limit,
+            previous_move=previous_move,
+            previous_move_was_capture=previous_move_was_capture,
+        )
         great_candidate = is_great(
             move,
             best_move,
@@ -615,7 +857,7 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
             board_before,
             is_book=is_book,
             is_mate=is_mate_delivered,
-            is_brilliant=is_brilliant,
+            is_brilliant=brilliant_candidate,
             previous_move=previous_move,
             previous_move_was_capture=previous_move_was_capture,
         )
@@ -631,11 +873,23 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         eval_swing = abs((curr_cp - prev_cp) / 100)
 
         base_class = classify_move(
-            prev_cp, curr_cp, great_candidate, is_sac, is_book, is_mate_delivered
+            prev_cp,
+            curr_cp,
+            great_candidate,
+            brilliant_candidate,
+            is_book,
+            is_mate_delivered,
         )
         is_miss = is_miss_move(board_before, move, best_move, prev_cp, curr_cp, base_class)
-        classification = classify_move(prev_cp, curr_cp, great_candidate, is_sac, is_book,
-                                       is_mate_delivered, is_miss=is_miss)
+        classification = classify_move(
+            prev_cp,
+            curr_cp,
+            great_candidate,
+            brilliant_candidate,
+            is_book,
+            is_mate_delivered,
+            is_miss=is_miss,
+        )
 
         cp_loss = min(1000, max(0, prev_cp - curr_cp))
         total_cp_loss[mover] += cp_loss
@@ -648,7 +902,9 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         facts, prompt_str = extract_facts(
             board_before, move, best_move, prev_cp, curr_cp,
             classification, opp_reply_san, opening_name, phase,
-            is_sacrifice=is_sac, best_line=best_line, **multipv_signals)
+            is_sacrifice=sacrifice_evidence["verified"],
+            best_line=best_line,
+            **multipv_signals)
 
         entry = {
             "ply": ply,
@@ -752,7 +1008,6 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
 
     mover = board_before.turn
     san = board_before.san(move)
-    is_sac = is_sacrifice(board_before, move)
 
     board = board_before.copy(stack=False)
     board.push(move)
@@ -788,11 +1043,23 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
         # Same convention as analyze_game_streaming: both the book test and the
         # opening name see the line *including* the move being judged, so the
         # same move gets the same classification either way.
-        is_book = (is_book_move(uci_history, move.uci())
-                   and abs(curr_cp) < 80 and not is_sac)
+        is_book = is_book_move(uci_history, move.uci()) and abs(curr_cp) < 80
         _, opening_name = lookup_opening([*uci_history, move.uci()])
 
-    is_brilliant = is_sac and (is_mate_delivered or cp_to_wp(curr_cp) > 0.20)
+    brilliant_candidate, sacrifice_evidence = evaluate_brilliant(
+        board_before,
+        move,
+        best_move,
+        best_wp,
+        legal_move_count,
+        is_book,
+        is_mate_delivered,
+        info,
+        engine,
+        limit,
+        previous_move=previous_move,
+        previous_move_was_capture=previous_move_was_capture,
+    )
     great_candidate = is_great(
         move,
         best_move,
@@ -802,22 +1069,37 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
         board_before,
         is_book=is_book,
         is_mate=is_mate_delivered,
-        is_brilliant=is_brilliant,
+        is_brilliant=brilliant_candidate,
         previous_move=previous_move,
         previous_move_was_capture=previous_move_was_capture,
     )
 
     phase = _game_phase(board, ply)
-    base_class = classify_move(prev_cp, curr_cp, great_candidate, is_sac, is_book,
-                               is_mate_delivered)
+    base_class = classify_move(
+        prev_cp,
+        curr_cp,
+        great_candidate,
+        brilliant_candidate,
+        is_book,
+        is_mate_delivered,
+    )
     is_miss = is_miss_move(board_before, move, best_move, prev_cp, curr_cp, base_class)
-    classification = classify_move(prev_cp, curr_cp, great_candidate, is_sac, is_book,
-                                   is_mate_delivered, is_miss=is_miss)
+    classification = classify_move(
+        prev_cp,
+        curr_cp,
+        great_candidate,
+        brilliant_candidate,
+        is_book,
+        is_mate_delivered,
+        is_miss=is_miss,
+    )
 
     facts, prompt_str = extract_facts(
         board_before, move, best_move, prev_cp, curr_cp,
         classification, opp_reply_san, opening_name, phase,
-        is_sacrifice=is_sac, best_line=best_line, **multipv_signals)
+        is_sacrifice=sacrifice_evidence["verified"],
+        best_line=best_line,
+        **multipv_signals)
 
     return {
         "ply": ply,

@@ -159,6 +159,58 @@ class _GreatStubEngine(_StubEngine):
         ]
 
 
+class _BrilliantStubEngine(_StubEngine):
+    fen = "4k3/4p3/8/8/8/8/8/4R1K1 w - - 0 1"
+
+    def __init__(self, accept_main=True, forced_capture_cp=100):
+        super().__init__()
+        self.accept_main = accept_main
+        self.forced_capture_cp = forced_capture_cp
+
+    def analyse(self, board, _limit, multipv=2, root_moves=None):
+        self.calls += 1
+        sacrifice = chess.Move.from_uci("e1e7")
+        capture = chess.Move.from_uci("e8e7")
+        decline = chess.Move.from_uci("e8f8")
+
+        if root_moves is not None:
+            assert root_moves == [capture]
+            return [{
+                "score": chess.engine.PovScore(
+                    chess.engine.Cp(self.forced_capture_cp), chess.WHITE
+                ),
+                "pv": _pv(board, "e8e7"),
+            }]
+
+        if board.turn == chess.WHITE:
+            main_reply = "e8e7" if self.accept_main else "e8f8"
+            return [
+                {
+                    "score": chess.engine.PovScore(chess.engine.Cp(100), chess.WHITE),
+                    "pv": _pv(board, "e1e7", main_reply),
+                },
+                {
+                    "score": chess.engine.PovScore(chess.engine.Cp(90), chess.WHITE),
+                    "pv": _pv(board, "e1e2"),
+                },
+            ]
+
+        reply = capture if self.accept_main else decline
+        return [
+            {
+                "score": chess.engine.PovScore(chess.engine.Cp(100), chess.WHITE),
+                "pv": self._line(board, reply),
+            },
+            {
+                "score": chess.engine.PovScore(chess.engine.Cp(90), chess.WHITE),
+                "pv": self._line(
+                    board,
+                    next(move for move in board.legal_moves if move != reply),
+                ),
+            },
+        ][:multipv]
+
+
 def test_streaming_analysis_stays_serializable_without_extra_engine_calls():
     engine = _StubEngine()
     events = list(analyze_game_streaming("1. e4 e5", engine, depth=8))
@@ -197,6 +249,33 @@ def test_single_move_pipeline_emits_great_and_root_analysis_fields():
     assert entry["best_move"] == "e2e4"
     assert entry["best_wp"] > entry["second_best_wp"]
     assert entry["legal_move_count"] == 20
+
+
+def test_single_move_pipeline_reuses_main_pv_for_accepted_brilliant_sacrifice():
+    engine = _BrilliantStubEngine(accept_main=True)
+    entry = analyze_move(engine.fen, "e1e7", engine, depth=8)
+
+    assert entry["classification"] == "Brilliant"
+    assert entry["facts"]["is_sacrifice"] is True
+    assert engine.calls == 2
+
+
+def test_single_move_pipeline_verifies_declined_brilliant_with_one_extra_search():
+    engine = _BrilliantStubEngine(accept_main=False, forced_capture_cp=100)
+    entry = analyze_move(engine.fen, "e1e7", engine, depth=8)
+
+    assert entry["classification"] == "Brilliant"
+    assert entry["facts"]["is_sacrifice"] is True
+    assert engine.calls == 3
+
+
+def test_single_move_pipeline_rejects_sacrifice_refuted_by_forced_capture():
+    engine = _BrilliantStubEngine(accept_main=False, forced_capture_cp=-500)
+    entry = analyze_move(engine.fen, "e1e7", engine, depth=8)
+
+    assert entry["classification"] == "Best"
+    assert entry["facts"]["is_sacrifice"] is False
+    assert engine.calls == 3
 
 
 def test_full_game_and_single_move_paths_expose_the_same_richer_facts():
