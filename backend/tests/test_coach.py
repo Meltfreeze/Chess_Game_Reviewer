@@ -58,7 +58,7 @@ def _blunder_move():
 def test_batch_rejects_unjustified_notable_comment(monkeypatch):
     _install_fake_genai(monkeypatch)
     move = _blunder_move()
-    _, comments = generate_coach(
+    _, comments, all_comments_succeeded = generate_coach(
         [move],
         "White",
         _FakeClient({"summary": "Summary", "comments": {"0": "This is a mistake."}}),
@@ -68,13 +68,14 @@ def test_batch_rejects_unjustified_notable_comment(monkeypatch):
     assert comments[0] != "This is a mistake."
     assert "queen" in comments[0].lower()
     assert "pinned" in comments[0].lower()
+    assert not all_comments_succeeded
 
 
 def test_batch_keeps_comment_that_cites_verified_fact(monkeypatch):
     _install_fake_genai(monkeypatch)
     move = _blunder_move()
     justified = "Your pinned queen on d4 is left vulnerable."
-    _, comments = generate_coach(
+    _, comments, all_comments_succeeded = generate_coach(
         [move],
         "White",
         _FakeClient({"summary": "Summary", "comments": {"0": justified}}),
@@ -82,6 +83,25 @@ def test_batch_keeps_comment_that_cites_verified_fact(monkeypatch):
     )
 
     assert comments[0] == justified
+    assert all_comments_succeeded
+
+
+def test_batch_fails_status_when_a_requested_comment_is_missing(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    first = _blunder_move()
+    second = {**_blunder_move(), "uci": "d1d3"}
+    justified = "Your pinned queen on d4 is left vulnerable."
+
+    _, comments, all_comments_succeeded = generate_coach(
+        [first, second],
+        "White",
+        _FakeClient({"summary": "Summary", "comments": {"0": justified}}),
+        _cache={},
+    )
+
+    assert comments[0] == justified
+    assert comments[1] == template_comment(second)
+    assert not all_comments_succeeded
 
 
 def test_single_move_applies_the_same_citation_check(monkeypatch):
@@ -107,11 +127,14 @@ def test_single_move_applies_the_same_citation_check(monkeypatch):
 
 def test_batch_without_gemini_returns_fact_based_fallback():
     move = _blunder_move()
-    summary, comments = generate_coach([move], "White", None, _cache={})
+    summary, comments, all_comments_succeeded = generate_coach(
+        [move], "White", None, _cache={}
+    )
 
     assert summary
     assert "queen" in comments[0].lower()
     assert "pinned" in comments[0].lower()
+    assert not all_comments_succeeded
 
 
 def test_fallback_uses_forcing_line_and_verified_sacrifice():

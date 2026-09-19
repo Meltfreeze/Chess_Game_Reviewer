@@ -49,6 +49,7 @@ export default function App() {
   const [progress, setProgress] = useState<{ ply: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [commentaryStatus, setCommentaryStatus] = useState<boolean | null>(null);
   const [tree, setTree] = useState<MoveTree | null>(null);
   const [analysisDepth, setAnalysisDepth] = useState(16);
   const [boardSize, setBoardSize] = useState(520);
@@ -98,6 +99,7 @@ export default function App() {
   }, [hasTree]);
 
   const handleAnalyze = (pgn: string, color: "White" | "Black", depth: number) => {
+    setCommentaryStatus(null);
     if (!hasValidToken()) {
       pendingAnalyze.current = { pgn, color, depth };
       setAuthOpen(true);
@@ -108,6 +110,7 @@ export default function App() {
 
   const runAnalyze = async (pgn: string, color: "White" | "Black", depth: number) => {
     setLoading(true);
+    setCommentaryStatus(null);
     setError(null);
     setProgress(null);
     try {
@@ -118,6 +121,7 @@ export default function App() {
         onProgress: (ply, total) => setProgress({ ply, total }),
       });
       setResult(data);
+      setCommentaryStatus(data.all_comments_succeeded);
       setTree(buildTree(data));
       setAnalysisDepth(depth);
       setBoardFlipped(color === "Black");
@@ -215,7 +219,12 @@ export default function App() {
     <div className="w-full pt-6 px-6 pb-1">
       <h1 className="text-2xl font-bold mb-4">Chess Game Review</h1>
 
-      <AnalyzeForm onAnalyze={handleAnalyze} loading={loading} progress={progress} />
+      <AnalyzeForm
+        onAnalyze={handleAnalyze}
+        loading={loading}
+        progress={progress}
+        commentaryStatus={commentaryStatus}
+      />
 
       {error && (
         <div className="bg-red-900/40 border border-red-700 text-red-200 rounded-lg p-3 mb-6">

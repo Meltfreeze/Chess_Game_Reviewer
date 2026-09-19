@@ -81,4 +81,26 @@ describe("AnalyzeForm depth selector", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Review Game" })).toBeEnabled());
     expect(screen.getByText(/verified fallback coaching/i)).toBeInTheDocument();
   });
+
+  it.each([
+    [true, "Status: Success", "text-green-400"],
+    [false, "Status: Failed", "text-red-400"],
+  ])("shows the completed commentary status", (status, label, colorClass) => {
+    render(
+      <AnalyzeForm
+        onAnalyze={vi.fn()}
+        loading={false}
+        commentaryStatus={status}
+      />
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(label);
+    expect(screen.getByRole("status")).toHaveClass(colorClass);
+  });
+
+  it("does not show a commentary status before completion", () => {
+    render(<AnalyzeForm onAnalyze={vi.fn()} loading={true} commentaryStatus={null} />);
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
 });

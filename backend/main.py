@@ -214,7 +214,7 @@ def analyze_game(req: AnalyzeRequest):
                 yield _sse_event("error", {"message": "Analysis produced no result"})
                 return
 
-            summary, comments = coach_mod.generate_coach(
+            summary, comments, all_comments_succeeded = coach_mod.generate_coach(
                 complete["move_data"],
                 req.player_color,
                 gemini,
@@ -229,6 +229,7 @@ def analyze_game(req: AnalyzeRequest):
                 "hist": complete["hist"],
                 "critical_moments": complete["critical_moments"],
                 "coach": {"summary": summary, "comments": comments},
+                "all_comments_succeeded": all_comments_succeeded,
                 "player_color": req.player_color,
             }
             yield _sse_event("complete", result)
