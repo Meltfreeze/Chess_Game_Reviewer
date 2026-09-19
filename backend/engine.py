@@ -451,6 +451,31 @@ def _move_is_safe(board, move):
     return not _piece_is_hanging(after, move.to_square, mover)
 
 
+def _is_only_unattacked_escape(position, move):
+    """Return whether an attacked non-king has exactly one safe destination."""
+    piece = position.piece_at(move.from_square)
+    if (not piece or piece.color != position.turn
+            or piece.piece_type == chess.KING):
+        return False
+
+    opponent = not piece.color
+    if not position.is_attacked_by(opponent, move.from_square):
+        return False
+
+    safe_destinations = set()
+    for candidate in position.legal_moves:
+        if candidate.from_square != move.from_square:
+            continue
+        after = position.copy(stack=False)
+        after.push(candidate)
+        if not after.is_attacked_by(opponent, candidate.to_square):
+            safe_destinations.add(candidate.to_square)
+            if len(safe_destinations) > 1:
+                return False
+
+    return safe_destinations == {move.to_square}
+
+
 def is_trivially_obvious(move, position, legal_move_count=None,
                          previous_move=None, previous_move_was_capture=False):
     """Identify only the narrow, deterministic set of obvious moves.
@@ -478,6 +503,9 @@ def is_trivially_obvious(move, position, legal_move_count=None,
         return True
 
     if safe and move.promotion == chess.QUEEN:
+        return True
+
+    if _is_only_unattacked_escape(position, move):
         return True
 
     return False

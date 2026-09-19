@@ -175,6 +175,36 @@ def test_safe_automatic_queen_promotion_is_obvious_and_stays_best():
     _assert_obvious_move_stays_best(board, chess.Move.from_uci("a7a8q"))
 
 
+def test_only_unattacked_escape_for_attacked_piece_is_obvious_and_stays_best():
+    board = chess.Board("7k/8/8/8/8/3p4/1b6/N6K w - - 0 1")
+    move = chess.Move.from_uci("a1b3")
+
+    assert board.is_attacked_by(chess.BLACK, chess.A1)
+    _assert_obvious_move_stays_best(board, move)
+
+
+def test_attacked_piece_with_two_unattacked_destinations_can_still_be_great():
+    board = chess.Board("7k/8/8/8/8/8/1b6/N6K w - - 0 1")
+    move = chess.Move.from_uci("a1b3")
+
+    assert board.is_attacked_by(chess.BLACK, chess.A1)
+    assert not is_trivially_obvious(move, board)
+    assert is_great(
+        move, move, 0.52, 0.30, board.legal_moves.count(), board
+    )
+
+
+def test_piece_with_only_one_unattacked_destination_must_start_attacked():
+    board = chess.Board("7k/8/8/8/8/3p4/8/N6K w - - 0 1")
+    move = chess.Move.from_uci("a1b3")
+
+    assert not board.is_attacked_by(chess.BLACK, chess.A1)
+    assert not is_trivially_obvious(move, board)
+    assert is_great(
+        move, move, 0.52, 0.30, board.legal_moves.count(), board
+    )
+
+
 def test_queen_promotion_that_is_immediately_lost_is_not_obvious():
     board = chess.Board("1r5k/P7/8/8/8/8/8/7K w - - 0 1")
 
