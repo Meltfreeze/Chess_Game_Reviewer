@@ -228,7 +228,7 @@ def generate_coach(move_data, player_color, gemini_client, critical_moments=None
     summary = _fallback_summary(move_data, player_color)
 
     if gemini_client is None:
-        result = (summary, comments)
+        result = (summary, comments, False)
         _cache[key] = result
         return result
 
@@ -249,6 +249,7 @@ def generate_coach(move_data, player_color, gemini_client, critical_moments=None
         f"ROUTINE MOVES: {json.dumps(payload_brief)}"
     )
 
+    all_comments_succeeded = False
     try:
         from google import genai
         resp = gemini_client.models.generate_content(
@@ -262,26 +263,34 @@ def generate_coach(move_data, player_color, gemini_client, critical_moments=None
         )
         data = json.loads(resp.text.strip())
         summary = data.get("summary", summary)
-        for k, v in data.get("comments", {}).items():
-            try:
-                idx = int(k)
-                if _validate_comment(v, move_data[idx]):
-                    comments[idx] = v
-            except (ValueError, IndexError):
-                pass
-        for k, v in data.get("brief", {}).items():
-            try:
-                idx = int(k)
-                if _validate_comment(v, move_data[idx]):
-                    comments[idx] = v
-            except (ValueError, IndexError):
-                pass
+        accepted = set()
+
+        def apply_comments(generated):
+            if not isinstance(generated, dict):
+                return
+            for raw_idx, candidate in generated.items():
+                try:
+                    idx = int(raw_idx)
+                    if not 0 <= idx < len(move_data):
+                        continue
+                    if _validate_comment(candidate, move_data[idx]):
+                        comments[idx] = candidate
+                        accepted.add(idx)
+                except Exception:
+                    # One malformed entry must not prevent valid later entries
+                    # in the same batch from replacing their fallbacks.
+                    continue
+
+        apply_comments(data.get("comments", {}))
+        apply_comments(data.get("brief", {}))
+        requested = set(notable) | set(brief)
+        all_comments_succeeded = requested.issubset(accepted)
     except Exception:
         # The deterministic comments above are the safe default. A failed API
         # call or malformed response must degrade to them, not break review.
         pass
 
-    result = (summary, comments)
+    result = (summary, comments, all_comments_succeeded)
     _cache[key] = result
     return result
 

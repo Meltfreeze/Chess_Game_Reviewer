@@ -8,10 +8,23 @@ const appView = vi.hoisted(() => ({
 }));
 
 vi.mock("./components/AnalyzeForm", () => ({
-  default: ({ onAnalyze }: { onAnalyze: (pgn: string, color: "White" | "Black", depth: number) => void }) => (
-    <button type="button" onClick={() => onAnalyze("fixture", appView.analyzedColor, 14)}>
-      Analyze fixture
-    </button>
+  default: ({
+    onAnalyze,
+    commentaryStatus,
+  }: {
+    onAnalyze: (pgn: string, color: "White" | "Black", depth: number) => void;
+    commentaryStatus: boolean | null;
+  }) => (
+    <>
+      <button type="button" onClick={() => onAnalyze("fixture", appView.analyzedColor, 14)}>
+        Analyze fixture
+      </button>
+      {commentaryStatus !== null && (
+        <span data-testid="commentary-status">
+          {commentaryStatus ? "Status: Success" : "Status: Failed"}
+        </span>
+      )}
+    </>
   ),
 }));
 
@@ -89,12 +102,14 @@ const RESULT: AnalysisResult = {
   hist: [20],
   critical_moments: [],
   coach: { summary: "", comments: [""] },
+  all_comments_succeeded: true,
   player_color: "White",
 };
 
 describe("App board orientation", () => {
   beforeEach(() => {
     appView.analyzedColor = "White";
+    vi.mocked(analyzeGame).mockReset();
     vi.mocked(analyzeGame).mockResolvedValue(RESULT);
   });
 
@@ -122,5 +137,29 @@ describe("App board orientation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
 
     await waitFor(() => expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "true"));
+  });
+
+  it("shows the completed status and clears it while a new run is pending", async () => {
+    let finishSecondRun: (result: AnalysisResult) => void = () => {};
+    const secondRun = new Promise<AnalysisResult>((resolve) => {
+      finishSecondRun = resolve;
+    });
+    vi.mocked(analyzeGame)
+      .mockResolvedValueOnce(RESULT)
+      .mockReturnValueOnce(secondRun);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("commentary-status")).toHaveTextContent("Status: Success");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
+    expect(screen.queryByTestId("commentary-status")).not.toBeInTheDocument();
+
+    finishSecondRun({ ...RESULT, all_comments_succeeded: false });
+    await waitFor(() => {
+      expect(screen.getByTestId("commentary-status")).toHaveTextContent("Status: Failed");
+    });
   });
 });

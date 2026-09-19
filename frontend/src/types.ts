@@ -87,6 +87,7 @@ export interface AnalysisResult {
   hist: number[];
   critical_moments: CriticalMoment[];
   coach: { summary: string; comments: string[] };
+  all_comments_succeeded: boolean;
   player_color: string;
 }
 

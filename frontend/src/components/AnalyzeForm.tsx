@@ -8,9 +8,15 @@ interface AnalyzeFormProps {
   onAnalyze: (pgn: string, playerColor: PlayerColor, depth: number) => void;
   loading: boolean;
   progress?: { ply: number; total: number } | null;
+  commentaryStatus?: boolean | null;
 }
 
-export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFormProps) {
+export default function AnalyzeForm({
+  onAnalyze,
+  loading,
+  progress,
+  commentaryStatus = null,
+}: AnalyzeFormProps) {
   const [pgn, setPgn] = useState("");
   const [playerColor, setPlayerColor] = useState<PlayerColor>("White");
   const [depth, setDepth] = useState(14);
@@ -184,18 +190,31 @@ export default function AnalyzeForm({ onAnalyze, loading, progress }: AnalyzeFor
         </p>
       )}
 
-      <button
-        type="button"
-        disabled={!canAnalyze}
-        onClick={() => onAnalyze(pgn, playerColor, depth)}
-        className="mt-4 px-6 py-2.5 rounded-lg font-bold bg-green-700 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
-      >
-        {loading
-          ? progress
-            ? `Analyzing move ${progress.ply}/${progress.total}…`
-            : "Analyzing…"
-          : "Review Game"}
-      </button>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          disabled={!canAnalyze}
+          onClick={() => onAnalyze(pgn, playerColor, depth)}
+          className="px-6 py-2.5 rounded-lg font-bold bg-green-700 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {loading
+            ? progress
+              ? `Analyzing move ${progress.ply}/${progress.total}…`
+              : "Analyzing…"
+            : "Review Game"}
+        </button>
+        {commentaryStatus !== null && (
+          <span
+            role="status"
+            aria-live="polite"
+            className={`text-sm font-semibold ${
+              commentaryStatus ? "text-green-400" : "text-red-400"
+            }`}
+          >
+            Status: {commentaryStatus ? "Success" : "Failed"}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
