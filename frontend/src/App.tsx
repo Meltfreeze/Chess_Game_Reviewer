@@ -50,7 +50,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [tree, setTree] = useState<MoveTree | null>(null);
-  const [analysisDepth, setAnalysisDepth] = useState(14);
+  const [analysisDepth, setAnalysisDepth] = useState(16);
   const [boardSize, setBoardSize] = useState(520);
   const [boardFlipped, setBoardFlipped] = useState(false);
 

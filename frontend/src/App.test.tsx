@@ -9,7 +9,7 @@ const appView = vi.hoisted(() => ({
 
 vi.mock("./components/AnalyzeForm", () => ({
   default: ({ onAnalyze }: { onAnalyze: (pgn: string, color: "White" | "Black", depth: number) => void }) => (
-    <button type="button" onClick={() => onAnalyze("fixture", appView.analyzedColor, 14)}>
+    <button type="button" onClick={() => onAnalyze("fixture", appView.analyzedColor, 16)}>
       Analyze fixture
     </button>
   ),

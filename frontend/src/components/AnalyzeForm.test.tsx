@@ -17,10 +17,10 @@ describe("AnalyzeForm depth selector", () => {
   it("shows the preset depths and marks the active depth", () => {
     render(<AnalyzeForm onAnalyze={vi.fn()} loading={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /current 14/i }));
+    fireEvent.click(screen.getByRole("button", { name: /current 16/i }));
 
     expect(screen.getAllByRole("option")).toHaveLength(5);
-    expect(screen.getByRole("option", { name: /14/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("option", { name: /16/ })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("option", { name: /12/ })).toHaveAttribute("aria-selected", "false");
   });
 
@@ -28,7 +28,7 @@ describe("AnalyzeForm depth selector", () => {
     const onAnalyze = vi.fn();
     render(<AnalyzeForm onAnalyze={onAnalyze} loading={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /current 14/i }));
+    fireEvent.click(screen.getByRole("button", { name: /current 16/i }));
     fireEvent.click(screen.getByRole("option", { name: /18/ }));
 
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
@@ -45,17 +45,17 @@ describe("AnalyzeForm depth selector", () => {
 
   it("supports keyboard opening, navigation, selection, and Escape", () => {
     render(<AnalyzeForm onAnalyze={vi.fn()} loading={false} />);
-    const trigger = screen.getByRole("button", { name: /current 14/i });
+    const trigger = screen.getByRole("button", { name: /current 16/i });
 
     trigger.focus();
     fireEvent.keyDown(trigger, { key: "Enter" });
     fireEvent.keyDown(trigger, { key: "ArrowDown" });
     fireEvent.keyDown(trigger, { key: "Enter" });
 
-    expect(screen.getByRole("button", { name: /current 16/i })).toHaveFocus();
+    expect(screen.getByRole("button", { name: /current 18/i })).toHaveFocus();
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
 
-    fireEvent.keyDown(screen.getByRole("button", { name: /current 16/i }), { key: " " });
+    fireEvent.keyDown(screen.getByRole("button", { name: /current 18/i }), { key: " " });
     expect(screen.getByRole("listbox")).toBeInTheDocument();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
@@ -64,7 +64,7 @@ describe("AnalyzeForm depth selector", () => {
   it("closes when clicking outside the control", () => {
     render(<AnalyzeForm onAnalyze={vi.fn()} loading={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /current 14/i }));
+    fireEvent.click(screen.getByRole("button", { name: /current 16/i }));
     fireEvent.mouseDown(screen.getByText("Analyze a new game"));
 
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();

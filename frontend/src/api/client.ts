@@ -37,7 +37,7 @@ export interface ReviewMoveOptions {
 
 /** Review one move played off the reviewed game — see POST /api/move-review. */
 export async function reviewMove(options: ReviewMoveOptions): Promise<MoveReviewResult> {
-  const { fen, uci, ply, history, depth = 14 } = options;
+  const { fen, uci, ply, history, depth = 16 } = options;
 
   const res = await fetch(`${API_BASE}/api/move-review`, {
     method: "POST",
@@ -58,7 +58,7 @@ export async function reviewMove(options: ReviewMoveOptions): Promise<MoveReview
 }
 
 export async function analyzeGame(options: AnalyzeOptions): Promise<AnalysisResult> {
-  const { pgn, playerColor, depth = 14, onProgress } = options;
+  const { pgn, playerColor, depth = 16, onProgress } = options;
 
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: "POST",

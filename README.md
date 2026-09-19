@@ -158,7 +158,7 @@ git lfs pull
 | `AUTH_SECRET` | none | Required shared password used to issue signed access tokens. |
 | `AUTH_TOKEN_TTL_SECONDS` | `43200` | Authentication token lifetime in seconds. |
 | `STOCKFISH_PATH` | auto-detected | Absolute path to a Stockfish executable. |
-| `ANALYSIS_DEPTH` | `14` | Default search depth; API requests accept depths from 8 through 22. |
+| `ANALYSIS_DEPTH` | `16` | Default search depth; API requests accept depths from 8 through 22. |
 | `ENGINE_TIME_LIMIT_SECONDS` | `10` | Per-search Stockfish time ceiling. |
 | `ENGINE_LOCK_TIMEOUT_SECONDS` | `45` | Maximum wait for the shared engine lock. |
 | `GEMINI_API_KEY` | none | Enables optional Gemini phrasing of verified coaching facts. |
