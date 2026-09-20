@@ -1,27 +1,32 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AnalysisResult } from "./types";
+import type { AnalysisCompletion, AnalysisFailure, AnalysisResult } from "./types";
 import App from "./App";
-
-const appView = vi.hoisted(() => ({
-  analyzedColor: "White" as "White" | "Black",
-}));
 
 vi.mock("./components/AnalyzeForm", () => ({
   default: ({
     onAnalyze,
-    commentaryStatus,
+    analysisFailure,
+    analysisCompletion,
   }: {
-    onAnalyze: (pgn: string, color: "White" | "Black", depth: number) => void;
-    commentaryStatus: boolean | null;
+    onAnalyze: (pgn: string, depth: number) => void;
+    analysisFailure: AnalysisFailure | null;
+    analysisCompletion: AnalysisCompletion | null;
   }) => (
     <>
-      <button type="button" onClick={() => onAnalyze("fixture", appView.analyzedColor, 16)}>
+      <button type="button" onClick={() => onAnalyze("fixture", 16)}>
         Analyze fixture
       </button>
-      {commentaryStatus !== null && (
-        <span data-testid="commentary-status">
-          {commentaryStatus ? "Status: Success" : "Status: Failed"}
+      {analysisFailure && (
+        <span data-testid="analysis-failure">{analysisFailure.kind}</span>
+      )}
+      {analysisCompletion && (
+        <span data-testid="analysis-completion">
+          {analysisCompletion.commentarySucceeded
+            ? "ai"
+            : analysisCompletion.commentaryStatus?.generation_complete
+              ? "generated-rejected"
+              : "fallback"}
         </span>
       )}
     </>
@@ -102,13 +107,11 @@ const RESULT: AnalysisResult = {
   hist: [20],
   critical_moments: [],
   coach: { summary: "", comments: [""] },
-  all_comments_succeeded: true,
-  player_color: "White",
+  commentary_succeeded: true,
 };
 
 describe("App board orientation", () => {
   beforeEach(() => {
-    appView.analyzedColor = "White";
     vi.mocked(analyzeGame).mockReset();
     vi.mocked(analyzeGame).mockResolvedValue(RESULT);
   });
@@ -131,35 +134,79 @@ describe("App board orientation", () => {
     expect(screen.getByTestId("eval-bar")).toHaveAttribute("data-flipped", "false");
   });
 
-  it("starts a new review from the analyzed player's perspective", async () => {
-    appView.analyzedColor = "Black";
+  it("starts every new review with White at the bottom", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
+    await waitFor(() => expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "false"));
 
-    await waitFor(() => expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "true"));
+    fireEvent.click(screen.getByRole("button", { name: "Flip board" }));
+    expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
+
+    await waitFor(() => expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "false"));
   });
 
-  it("shows the completed status and clears it while a new run is pending", async () => {
+  it("classifies a timeout for the preview slot and clears it on retry", async () => {
     let finishSecondRun: (result: AnalysisResult) => void = () => {};
     const secondRun = new Promise<AnalysisResult>((resolve) => {
       finishSecondRun = resolve;
     });
     vi.mocked(analyzeGame)
-      .mockResolvedValueOnce(RESULT)
+      .mockRejectedValueOnce(new Error("Engine timeout"))
       .mockReturnValueOnce(secondRun);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
     await waitFor(() => {
-      expect(screen.getByTestId("commentary-status")).toHaveTextContent("Status: Success");
+      expect(screen.getByTestId("analysis-failure")).toHaveTextContent("timeout");
     });
+    expect(consoleError).toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
-    expect(screen.queryByTestId("commentary-status")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("analysis-failure")).not.toBeInTheDocument();
 
-    finishSecondRun({ ...RESULT, all_comments_succeeded: false });
+    finishSecondRun(RESULT);
     await waitFor(() => {
-      expect(screen.getByTestId("commentary-status")).toHaveTextContent("Status: Failed");
+      expect(screen.queryByTestId("analysis-failure")).not.toBeInTheDocument();
+      expect(screen.getByTestId("analysis-completion")).toHaveTextContent("ai");
+    });
+    consoleError.mockRestore();
+  });
+
+  it("reports fallback commentary separately from review completion", async () => {
+    vi.mocked(analyzeGame).mockResolvedValue({ ...RESULT, commentary_succeeded: false });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("analysis-completion")).toHaveTextContent("fallback");
+    });
+  });
+
+  it("passes through complete Gemini output that failed verification", async () => {
+    vi.mocked(analyzeGame).mockResolvedValue({
+      ...RESULT,
+      commentary_succeeded: false,
+      commentary_status: {
+        gemini_attempted: true,
+        generation_complete: true,
+        summary_generated: true,
+        summary_accepted: false,
+        requested_comments: 1,
+        generated_comments: 1,
+        accepted_comments: 1,
+        fallback_used: true,
+      },
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Analyze fixture" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("analysis-completion")).toHaveTextContent("generated-rejected");
     });
   });
 });

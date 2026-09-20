@@ -10,8 +10,10 @@ from backend.coach import generate_coach, generate_move_comment, template_commen
 class _FakeModels:
     def __init__(self, payload):
         self.payload = payload
+        self.calls = []
 
-    def generate_content(self, **_kwargs):
+    def generate_content(self, **kwargs):
+        self.calls.append(kwargs)
         return types.SimpleNamespace(text=json.dumps(self.payload))
 
 
@@ -55,12 +57,58 @@ def _blunder_move():
     }
 
 
+def _scholars_mate_moves():
+    return [
+        {
+            "turn": "White",
+            "move_number": 3,
+            "san": "Qh5",
+            "uci": "d1h5",
+            "classification": "Inaccuracy",
+            "cp_loss": 70,
+            "facts": {
+                "played": "Qh5",
+                "class": "Inaccuracy",
+                "opening": "Bishop's Opening",
+            },
+            "prompt_str": "Qh5 (Inaccuracy); opening: Bishop's Opening",
+        },
+        {
+            "turn": "Black",
+            "move_number": 3,
+            "san": "Nf6",
+            "uci": "g8f6",
+            "classification": "Blunder",
+            "cp_loss": 1000,
+            "facts": {
+                "played": "Nf6",
+                "class": "Blunder",
+                "opening": "Bishop's Opening",
+            },
+            "prompt_str": "Nf6 (Blunder); opening: Bishop's Opening; opponent can reply Qxf7#",
+        },
+        {
+            "turn": "White",
+            "move_number": 4,
+            "san": "Qxf7#",
+            "uci": "h5f7",
+            "classification": "Best",
+            "cp_loss": 0,
+            "facts": {
+                "played": "Qxf7#",
+                "class": "Best",
+                "opening": "Bishop's Opening",
+            },
+            "prompt_str": "Qxf7# (Best); opening: Bishop's Opening; gives check",
+        },
+    ]
+
+
 def test_batch_rejects_unjustified_notable_comment(monkeypatch):
     _install_fake_genai(monkeypatch)
     move = _blunder_move()
-    _, comments, all_comments_succeeded = generate_coach(
+    _, comments, commentary_succeeded = generate_coach(
         [move],
-        "White",
         _FakeClient({"summary": "Summary", "comments": {"0": "This is a mistake."}}),
         _cache={},
     )
@@ -68,22 +116,74 @@ def test_batch_rejects_unjustified_notable_comment(monkeypatch):
     assert comments[0] != "This is a mistake."
     assert "queen" in comments[0].lower()
     assert "pinned" in comments[0].lower()
-    assert not all_comments_succeeded
+    assert not commentary_succeeded
 
 
 def test_batch_keeps_comment_that_cites_verified_fact(monkeypatch):
     _install_fake_genai(monkeypatch)
     move = _blunder_move()
     justified = "Your pinned queen on d4 is left vulnerable."
-    _, comments, all_comments_succeeded = generate_coach(
+    status = {}
+    _, comments, commentary_succeeded = generate_coach(
         [move],
-        "White",
-        _FakeClient({"summary": "Summary", "comments": {"0": justified}}),
+        _FakeClient({
+            "summary": "White's Qd4 was the decisive blunder, leaving the queen pinned.",
+            "comments": {"0": justified},
+        }),
         _cache={},
+        status_out=status,
     )
 
     assert comments[0] == justified
-    assert all_comments_succeeded
+    assert commentary_succeeded
+    assert status["generation_complete"] is True
+    assert status["fallback_used"] is False
+    assert status["accepted_comments"] == 1
+
+
+def test_batch_fails_status_when_summary_falls_back(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    move = _blunder_move()
+    justified = "Your pinned queen on d4 is left vulnerable."
+
+    status = {}
+    summary, comments, commentary_succeeded = generate_coach(
+        [move],
+        _FakeClient({
+            "summary": "Black made one blunder.",
+            "comments": {"0": justified},
+        }),
+        _cache={},
+        status_out=status,
+    )
+
+    assert summary == (
+        "White's Qd4 was the key blunder, leaving the queen on d4 pinned and vulnerable."
+    )
+    assert comments[0] == justified
+    assert not commentary_succeeded
+    assert status["generation_complete"] is True
+    assert status["summary_generated"] is True
+    assert status["summary_accepted"] is False
+    assert status["fallback_used"] is True
+
+
+def test_cached_commentary_preserves_status_without_another_gemini_call(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    move = _blunder_move()
+    client = _FakeClient({
+        "summary": "White's Qd4 was the decisive blunder, leaving the queen pinned.",
+        "comments": {"0": "Your pinned queen on d4 is left vulnerable."},
+    })
+    cache = {}
+    first_status = {}
+    second_status = {}
+
+    generate_coach([move], client, _cache=cache, status_out=first_status)
+    generate_coach([move], client, _cache=cache, status_out=second_status)
+
+    assert len(client.models.calls) == 1
+    assert second_status == first_status
 
 
 def test_batch_fails_status_when_a_requested_comment_is_missing(monkeypatch):
@@ -92,16 +192,15 @@ def test_batch_fails_status_when_a_requested_comment_is_missing(monkeypatch):
     second = {**_blunder_move(), "uci": "d1d3"}
     justified = "Your pinned queen on d4 is left vulnerable."
 
-    _, comments, all_comments_succeeded = generate_coach(
+    _, comments, commentary_succeeded = generate_coach(
         [first, second],
-        "White",
         _FakeClient({"summary": "Summary", "comments": {"0": justified}}),
         _cache={},
     )
 
     assert comments[0] == justified
     assert comments[1] == template_comment(second)
-    assert not all_comments_succeeded
+    assert not commentary_succeeded
 
 
 def test_single_move_applies_the_same_citation_check(monkeypatch):
@@ -127,14 +226,12 @@ def test_single_move_applies_the_same_citation_check(monkeypatch):
 
 def test_batch_without_gemini_returns_fact_based_fallback():
     move = _blunder_move()
-    summary, comments, all_comments_succeeded = generate_coach(
-        [move], "White", None, _cache={}
-    )
+    summary, comments, commentary_succeeded = generate_coach([move], None, _cache={})
 
     assert summary
     assert "queen" in comments[0].lower()
     assert "pinned" in comments[0].lower()
-    assert not all_comments_succeeded
+    assert not commentary_succeeded
 
 
 def test_fallback_uses_forcing_line_and_verified_sacrifice():
@@ -155,3 +252,107 @@ def test_fallback_uses_forcing_line_and_verified_sacrifice():
 
     assert "Nxd4 exd4 Qxd4" in template_comment(forcing)
     assert "sacrifice" in template_comment(sacrifice).lower()
+
+
+def test_summary_rejects_classification_attributed_to_wrong_side(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    moves = _scholars_mate_moves()
+    wrong = (
+        "This game in the Bishop's Opening saw White make an Inaccuracy "
+        "and then a Blunder, leading to a quick checkmate."
+    )
+
+    summary, _, _ = generate_coach(
+        moves,
+        _FakeClient({"summary": wrong, "comments": {}, "brief": {}}),
+        _cache={},
+    )
+
+    assert summary != wrong
+    assert summary == (
+        "In the Bishop's Opening, Black's 3...Nf6 was the decisive blunder, "
+        "allowing White to finish with 4.Qxf7#."
+    )
+
+
+def test_summary_accepts_verified_turning_point_narrative(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    moves = _scholars_mate_moves()
+    verified = (
+        "In the Bishop's Opening, Black's 3...Nf6 was the decisive blunder, "
+        "allowing White to finish with 4.Qxf7#."
+    )
+
+    summary, _, _ = generate_coach(
+        moves,
+        _FakeClient({"summary": verified, "comments": {}, "brief": {}}),
+        _cache={},
+    )
+
+    assert summary == verified
+
+
+def test_summary_rejects_generic_text_that_omits_the_game_story(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    moves = _scholars_mate_moves()
+    generic = "The Bishop's Opening produced an exciting game with a quick checkmate."
+
+    summary, _, _ = generate_coach(
+        moves,
+        _FakeClient({"summary": generic, "comments": {}, "brief": {}}),
+        _cache={},
+    )
+
+    assert summary != generic
+    assert "Black's 3...Nf6" in summary
+    assert "4.Qxf7#" in summary
+
+
+def test_summary_rejects_classification_inventory_even_when_counts_are_correct(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    moves = _scholars_mate_moves()
+    wrong = (
+        "The game was a Bishop's Opening where White played 1 Inaccuracy and "
+        "1 Best move, leading to checkmate. Black played 1 Blunder."
+    )
+
+    summary, _, _ = generate_coach(
+        moves,
+        _FakeClient({"summary": wrong, "comments": {}, "brief": {}}),
+        _cache={},
+    )
+
+    assert summary != wrong
+    assert "Black's 3...Nf6" in summary
+    assert "4.Qxf7#" in summary
+
+
+def test_batch_prompt_requires_a_turning_point_narrative(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    client = _FakeClient({"summary": "Game reviewed.", "comments": {}, "brief": {}})
+
+    generate_coach(_scholars_mate_moves(), client, _cache={})
+
+    prompt = client.models.calls[0]["contents"]
+    assert '"turn": "White"' in prompt
+    assert '"turn": "Black"' in prompt
+    assert '"Inaccuracy": 1' in prompt
+    assert '"Blunder": 1' in prompt
+    assert '"checkmate_by": "White"' in prompt
+    assert '"turning_points"' in prompt
+    assert '"san": "Nf6"' in prompt
+    assert '"san": "Qxf7#"' in prompt
+    assert "Do not enumerate classification totals" in prompt
+
+
+def test_batch_cache_is_shared_for_side_neutral_review():
+    cache = {}
+    moves = _scholars_mate_moves()
+
+    first_summary, _, _ = generate_coach(moves, None, _cache=cache)
+    second_summary, _, _ = generate_coach(moves, None, _cache=cache)
+
+    assert len(cache) == 1
+    assert first_summary == second_summary
+    assert first_summary.startswith("In the Bishop's Opening, Black's 3...Nf6")
+    assert "White to finish with 4.Qxf7#" in first_summary

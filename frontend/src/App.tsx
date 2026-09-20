@@ -9,7 +9,7 @@ import VariationBanner from "./components/VariationBanner";
 import PasswordModal from "./components/PasswordModal";
 import { analyzeGame, reviewMove } from "./api/client";
 import { AuthError, hasValidToken } from "./api/auth";
-import type { AnalysisResult } from "./types";
+import type { AnalysisCompletion, AnalysisFailure, AnalysisResult } from "./types";
 import {
   addBranch,
   buildTree,
@@ -44,12 +44,23 @@ function computeBoardSize(): number {
   return Math.max(320, Math.min(byHeight, byWidth));
 }
 
+function analysisFailureKind(error: unknown): AnalysisFailure["kind"] {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (message.includes("timeout") || message.includes("timed out")) return "timeout";
+  if (
+    /engine|stockfish|server|service|network|failed to fetch|analysis failed/.test(message)
+  ) {
+    return "engine";
+  }
+  return "unknown";
+}
+
 export default function App() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<{ ply: number; total: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [analysisFailure, setAnalysisFailure] = useState<AnalysisFailure | null>(null);
+  const [analysisCompletion, setAnalysisCompletion] = useState<AnalysisCompletion | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [commentaryStatus, setCommentaryStatus] = useState<boolean | null>(null);
   const [tree, setTree] = useState<MoveTree | null>(null);
   const [analysisDepth, setAnalysisDepth] = useState(16);
   const [boardSize, setBoardSize] = useState(520);
@@ -59,9 +70,7 @@ export default function App() {
   // is absent (or has expired) the requested analysis is parked here and the
   // password modal opens; a successful unlock replays it.
   const [authOpen, setAuthOpen] = useState(false);
-  const pendingAnalyze = useRef<{ pgn: string; color: "White" | "Black"; depth: number } | null>(
-    null
-  );
+  const pendingAnalyze = useRef<{ pgn: string; depth: number } | null>(null);
 
   useEffect(() => {
     setBoardSize(computeBoardSize());
@@ -98,40 +107,46 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [hasTree]);
 
-  const handleAnalyze = (pgn: string, color: "White" | "Black", depth: number) => {
-    setCommentaryStatus(null);
+  const handleAnalyze = (pgn: string, depth: number) => {
+    setAnalysisFailure(null);
+    setAnalysisCompletion(null);
     if (!hasValidToken()) {
-      pendingAnalyze.current = { pgn, color, depth };
+      pendingAnalyze.current = { pgn, depth };
       setAuthOpen(true);
       return;
     }
-    runAnalyze(pgn, color, depth);
+    runAnalyze(pgn, depth);
   };
 
-  const runAnalyze = async (pgn: string, color: "White" | "Black", depth: number) => {
+  const runAnalyze = async (pgn: string, depth: number) => {
     setLoading(true);
-    setCommentaryStatus(null);
-    setError(null);
+    setAnalysisFailure(null);
+    setAnalysisCompletion(null);
     setProgress(null);
     try {
       const data = await analyzeGame({
         pgn,
-        playerColor: color,
         depth,
         onProgress: (ply, total) => setProgress({ ply, total }),
       });
       setResult(data);
-      setCommentaryStatus(data.all_comments_succeeded);
       setTree(buildTree(data));
       setAnalysisDepth(depth);
-      setBoardFlipped(color === "Black");
+      setBoardFlipped(false);
+      setAnalysisCompletion({
+        pgn,
+        commentarySucceeded:
+          data.commentary_succeeded ?? data.all_comments_succeeded ?? false,
+        commentaryStatus: data.commentary_status,
+      });
     } catch (err) {
       if (err instanceof AuthError) {
         // Token expired between the check and the request — re-prompt and replay.
-        pendingAnalyze.current = { pgn, color, depth };
+        pendingAnalyze.current = { pgn, depth };
         setAuthOpen(true);
       } else {
-        setError(err instanceof Error ? err.message : "Analysis failed");
+        console.error("Game analysis failed", err);
+        setAnalysisFailure({ kind: analysisFailureKind(err), pgn, depth });
       }
     } finally {
       setLoading(false);
@@ -142,7 +157,7 @@ export default function App() {
     setAuthOpen(false);
     const pending = pendingAnalyze.current;
     pendingAnalyze.current = null;
-    if (pending) runAnalyze(pending.pgn, pending.color, pending.depth);
+    if (pending) runAnalyze(pending.pgn, pending.depth);
   };
 
   const handleAuthCancel = () => {
@@ -223,14 +238,9 @@ export default function App() {
         onAnalyze={handleAnalyze}
         loading={loading}
         progress={progress}
-        commentaryStatus={commentaryStatus}
+        analysisFailure={analysisFailure}
+        analysisCompletion={analysisCompletion}
       />
-
-      {error && (
-        <div className="bg-red-900/40 border border-red-700 text-red-200 rounded-lg p-3 mb-6">
-          {error}
-        </div>
-      )}
 
       {result && tree && node && (
         <div className="flex flex-wrap gap-6 items-start">

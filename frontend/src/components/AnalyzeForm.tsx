@@ -1,184 +1,248 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, type DragEvent } from "react";
 import { fetchHealth } from "../api/client";
-import type { HealthInfo } from "../types";
+import { lookupOpening } from "../openingLookup";
+import { parsePgnPreview, type PgnParseState } from "../pgnPreview";
+import type { AnalysisCompletion, AnalysisFailure, HealthInfo } from "../types";
+import GameStatusSlot, { type GameStatusState } from "./GameStatusSlot";
 
-const DEPTH_OPTIONS = [12, 14, 16, 18, 20] as const;
+const MIN_DEPTH = 8;
+const MAX_DEPTH = 22;
+
+const PGN_PREVIEW = `1. e4 e5 2. Nf3 Nc6 3. Bb5 a6
+4. Ba4 Nf6 5. O-O Be7 6. Re1 b5
+7. Bb3 d6 8. c3 O-O 9. h3 Nb8`;
 
 interface AnalyzeFormProps {
-  onAnalyze: (pgn: string, playerColor: PlayerColor, depth: number) => void;
+  onAnalyze: (pgn: string, depth: number) => void;
   loading: boolean;
   progress?: { ply: number; total: number } | null;
-  commentaryStatus?: boolean | null;
+  analysisFailure?: AnalysisFailure | null;
+  analysisCompletion?: AnalysisCompletion | null;
 }
 
 export default function AnalyzeForm({
   onAnalyze,
   loading,
   progress,
-  commentaryStatus = null,
+  analysisFailure = null,
+  analysisCompletion = null,
 }: AnalyzeFormProps) {
   const [pgn, setPgn] = useState("");
-  const [playerColor, setPlayerColor] = useState<PlayerColor>("White");
   const [depth, setDepth] = useState(16);
-  const [depthListOpen, setDepthListOpen] = useState(false);
-  const [highlightedDepthIndex, setHighlightedDepthIndex] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
-  const depthControlRef = useRef<HTMLDivElement>(null);
-  const depthButtonRef = useRef<HTMLButtonElement>(null);
+  const [parseState, setParseState] = useState<PgnParseState>({ kind: "empty" });
 
   useEffect(() => {
     fetchHealth().then(setHealth).catch(() => setHealth({ ready: false }));
   }, []);
 
   useEffect(() => {
-    if (!depthListOpen) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const parsed = parsePgnPreview(pgn);
+      if (cancelled) return;
+      setParseState(parsed);
 
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!depthControlRef.current?.contains(event.target as Node)) {
-        setDepthListOpen(false);
+      if (parsed.kind === "valid" && (!parsed.preview.opening || !parsed.preview.eco)) {
+        try {
+          const opening = await lookupOpening(parsed.preview.uciMoves);
+          if (!cancelled && opening) {
+            setParseState((current) =>
+              current.kind === "valid" && current.preview.sourcePgn === parsed.preview.sourcePgn
+                ? {
+                    kind: "valid",
+                    preview: {
+                      ...current.preview,
+                      opening: current.preview.opening ?? opening.name,
+                      eco: current.preview.eco ?? opening.eco,
+                    },
+                  }
+                : current
+            );
+          }
+        } catch {
+          // Opening recognition is optional; PGN validity does not depend on it.
+        }
       }
-    };
+    }, 250);
 
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setDepthListOpen(false);
-        depthButtonRef.current?.focus();
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleEscape);
     return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleEscape);
+      cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [depthListOpen]);
+  }, [pgn]);
 
-  const openDepthList = () => {
-    const selectedIndex = DEPTH_OPTIONS.findIndex((option) => option === depth);
-    setHighlightedDepthIndex(selectedIndex >= 0 ? selectedIndex : 0);
-    setDepthListOpen(true);
-  };
-
-  const selectDepth = (nextDepth: number) => {
-    setDepth(nextDepth);
-    setDepthListOpen(false);
-    depthButtonRef.current?.focus();
-  };
-
-  const handleDepthKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "Escape") return;
-
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      if (depthListOpen) {
-        selectDepth(DEPTH_OPTIONS[highlightedDepthIndex]);
-      } else {
-        openDepthList();
-      }
-      return;
-    }
-
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    if (!depthListOpen) {
-      openDepthList();
-      return;
-    }
-
-    const direction = event.key === "ArrowDown" ? 1 : -1;
-    setHighlightedDepthIndex((current) =>
-      (current + direction + DEPTH_OPTIONS.length) % DEPTH_OPTIONS.length
-    );
+    if (loading) return;
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragging(true);
   };
 
-  const canAnalyze = health?.ready && !loading && pgn.trim();
+  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) {
+      return;
+    }
+    setIsDragging(false);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    if (loading) return;
+    const file = event.dataTransfer.files?.[0];
+    if (!file) return;
+    file.text().then(setPgn);
+  };
+
+  const depthBand = depth <= 12 ? "Quick" : depth >= 18 ? "Deep" : "Balanced";
+  const depthProgress = ((depth - MIN_DEPTH) / (MAX_DEPTH - MIN_DEPTH)) * 100;
+  const validPreview = parseState.kind === "valid" && parseState.preview.sourcePgn === pgn.trim()
+    ? parseState.preview
+    : null;
+  const failed = validPreview && analysisFailure?.pgn === validPreview.sourcePgn
+    ? analysisFailure
+    : null;
+  const completed = validPreview && analysisCompletion?.pgn === validPreview.sourcePgn
+    ? analysisCompletion
+    : null;
+  const statusState: GameStatusState = validPreview
+    ? loading
+      ? { kind: "running", preview: validPreview, progress }
+      : failed
+        ? { kind: "failed", preview: validPreview, reason: failureMessage(failed) }
+        : completed
+          ? {
+              kind: "completed",
+              preview: validPreview,
+              commentarySucceeded: completed.commentarySucceeded,
+              commentaryStatus: completed.commentaryStatus,
+            }
+          : { kind: "valid", preview: validPreview }
+    : parseState;
+  const canAnalyze = Boolean(health?.ready && !loading && validPreview);
+  const invalidForSubmit = parseState.kind !== "valid";
+
+  const handleAnalyze = () => {
+    if (loading) return;
+    const current = parsePgnPreview(pgn);
+    if (current.kind !== "valid") {
+      setParseState(current);
+      return;
+    }
+    onAnalyze(current.preview.sourcePgn, depth);
+  };
 
   return (
-    <div className="bg-panel rounded-xl p-5 mb-6 border border-panelBorder">
-      <h2 className="text-xl font-bold mb-4">Analyze a new game</h2>
+    <div className="mb-6 rounded-2xl border border-panelBorder bg-panel p-5 min-[760px]:p-7">
+      <h2 className="mb-5 text-xl font-bold text-[#f2f1ed]">Analyze a new game</h2>
 
-      <div className="flex flex-wrap items-center gap-4 mb-3 text-sm">
-        <ColorToggle value={playerColor} onChange={setPlayerColor} />
+      <div className="grid gap-6 min-[760px]:grid-cols-[minmax(0,1.55fr)_minmax(280px,1fr)]">
         <div
-          ref={depthControlRef}
-          className="relative ml-auto flex items-center gap-[0.325rem] rounded-lg border border-panelBorder bg-[#21201d] py-1.5 pl-1.5 pr-1.5 transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/40"
+          data-testid="pgn-drop-zone"
+          onDragEnter={() => !loading && setIsDragging(true)}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`overflow-hidden rounded-xl border border-dashed bg-[#21201d] transition-colors ${
+            isDragging
+              ? "border-accent bg-accent/5 ring-2 ring-accent/30"
+              : "border-[#4a4742]"
+          }`}
         >
-          <span className="text-[0.9rem] leading-none text-[#8b8987]">
-            Depth
-          </span>
-          <button
-            ref={depthButtonRef}
-            type="button"
-            aria-label={`Select analysis depth, current ${depth}`}
-            aria-haspopup="listbox"
-            aria-expanded={depthListOpen}
-            aria-controls="depth-options"
-            onClick={() => (depthListOpen ? setDepthListOpen(false) : openDepthList())}
-            onKeyDown={handleDepthKeyDown}
-            className="min-w-12 rounded-md bg-panelBorder px-3 py-1.5 font-semibold leading-none text-[#e8e8e8] transition-colors hover:bg-[#5c5a57] focus:outline-none"
-          >
-            {depth}
-          </button>
+          <div className="relative min-h-64 min-[760px]:min-h-72">
+            {!pgn && (
+              <pre
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 whitespace-pre-wrap p-6 font-mono text-sm leading-8 text-[#756d61]"
+              >
+                {PGN_PREVIEW}
+              </pre>
+            )}
+            <textarea
+              aria-label="PGN"
+              value={pgn}
+              readOnly={loading}
+              aria-disabled={loading}
+              onChange={(event) => setPgn(event.target.value)}
+              className="absolute inset-0 z-10 h-full w-full resize-none bg-transparent p-6 font-mono text-sm leading-8 text-[#e8e6df] caret-accent outline-none focus:ring-2 focus:ring-inset focus:ring-accent/50 read-only:cursor-not-allowed read-only:opacity-75"
+            />
+          </div>
 
-          {depthListOpen && (
-            <div
-              id="depth-options"
-              role="listbox"
-              aria-label="Analysis depth"
-              className="absolute right-0 top-full z-20 mt-1.5 min-w-24 overflow-hidden rounded-lg border border-panelBorder bg-panel p-1 shadow-xl"
-            >
-              {DEPTH_OPTIONS.map((option, index) => {
-                const active = option === depth;
-                const highlighted = index === highlightedDepthIndex;
-                return (
-                  <button
-                    key={option}
-                    type="button"
-                    role="option"
-                    aria-selected={active}
-                    onMouseEnter={() => setHighlightedDepthIndex(index)}
-                    onClick={() => selectDepth(option)}
-                    className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left font-semibold transition-colors focus:outline-none ${
-                      active
-                        ? "bg-accent/20 text-accent"
-                        : highlighted
-                          ? "bg-panelBorder text-[#e8e8e8]"
-                          : "text-[#8b8987] hover:bg-panelBorder hover:text-[#e8e8e8]"
-                    }`}
-                  >
-                    <span>{option}</span>
-                    {active && <span aria-hidden>✓</span>}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-3 border-t border-panelBorder px-4 py-3">
+            <label className={`inline-flex items-center gap-2 rounded-lg border border-[#4a4742] px-3 py-2 text-sm font-medium text-[#bdb7ae] transition-colors focus-within:ring-2 focus-within:ring-accent/50 ${loading ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:border-accent/70 hover:text-[#eeeae3]"}`}>
+              <input
+                type="file"
+                accept=".pgn,.txt"
+                className="sr-only"
+                disabled={loading}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  file.text().then(setPgn);
+                }}
+              />
+              <UploadIcon />
+              Upload PGN file
+            </label>
+          </div>
         </div>
-      </div>
 
-      <textarea
-        value={pgn}
-        onChange={(e) => setPgn(e.target.value)}
-        placeholder="Paste PGN here..."
-        className="w-full h-36 bg-[#21201d] border border-panelBorder rounded-lg p-3 text-sm resize-y"
-      />
+        <div className="flex min-w-0 flex-col gap-5">
+          <div className="rounded-xl border border-panelBorder bg-[#292724] p-5">
+            <div className="flex items-center justify-between gap-4">
+              <label htmlFor="analysis-depth" className="text-sm font-semibold text-[#bdb7ae]">
+                Analysis depth
+              </label>
+              <output htmlFor="analysis-depth" className="text-xl font-semibold text-accent">
+                {depth}
+              </output>
+            </div>
+            <p className="mt-1 text-sm text-[#756f67]">Higher goes deeper, but takes longer to run.</p>
+            <input
+              id="analysis-depth"
+              aria-label="Analysis depth"
+              type="range"
+              min={MIN_DEPTH}
+              max={MAX_DEPTH}
+              step={1}
+              value={depth}
+              disabled={loading}
+              onChange={(event) => setDepth(Number(event.target.value))}
+              style={{
+                background: `linear-gradient(to right, #e58f2a 0%, #e58f2a ${depthProgress}%, #56514b ${depthProgress}%, #56514b 100%)`,
+              }}
+              className="mt-7 h-1.5 w-full cursor-pointer appearance-none rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-4 focus-visible:ring-offset-[#292724] [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-[#292724] [&::-moz-range-thumb]:bg-accent [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-[#292724] [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-[0_0_0_2px_#e58f2a]"
+            />
+            <div className="mt-4 flex justify-between text-xs font-medium">
+              {(["Quick", "Balanced", "Deep"] as const).map((label) => (
+                <span
+                  key={label}
+                  className={depthBand === label ? "font-semibold text-accent" : "text-[#756f67]"}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <label className="text-sm text-gray-400 cursor-pointer hover:text-gray-200">
-          <input
-            type="file"
-            accept=".pgn,.txt"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              file.text().then(setPgn);
-            }}
-          />
-          Upload PGN file
-        </label>
+          <GameStatusSlot state={statusState} />
+
+          <div>
+            <div title={invalidForSubmit ? "Paste a valid PGN first" : undefined}>
+              <button
+                type="button"
+                disabled={!canAnalyze}
+                onClick={handleAnalyze}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-6 py-3.5 font-bold text-[#1c1400] transition-colors hover:bg-[#f0a444] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-panel disabled:cursor-not-allowed disabled:bg-[#272522] disabled:text-[#756f67] disabled:hover:bg-[#272522]"
+              >
+                {loading ? <Spinner /> : <PlayIcon />}
+                {loading ? "Reviewing…" : "Review Game"}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       {health && !health.ready && (
@@ -189,91 +253,35 @@ export default function AnalyzeForm({
           Gemini is not configured; verified fallback coaching will be used.
         </p>
       )}
-
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          disabled={!canAnalyze}
-          onClick={() => onAnalyze(pgn, playerColor, depth)}
-          className="px-6 py-2.5 rounded-lg font-bold bg-green-700 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {loading
-            ? progress
-              ? `Analyzing move ${progress.ply}/${progress.total}…`
-              : "Analyzing…"
-            : "Review Game"}
-        </button>
-        {commentaryStatus !== null && (
-          <span
-            role="status"
-            aria-live="polite"
-            className={`text-sm font-semibold ${
-              commentaryStatus ? "text-green-400" : "text-red-400"
-            }`}
-          >
-            Status: {commentaryStatus ? "Success" : "Failed"}
-          </span>
-        )}
-      </div>
     </div>
   );
 }
 
-type PlayerColor = "White" | "Black";
+function failureMessage(failure: AnalysisFailure) {
+  if (failure.kind === "timeout") {
+    return `The analysis timed out at depth ${failure.depth}. Try a lower depth.`;
+  }
+  if (failure.kind === "engine") return "The engine stopped unexpectedly. Try again.";
+  return "Something went wrong during the review. Try again.";
+}
 
-function ColorToggle({
-  value,
-  onChange,
-}: {
-  value: PlayerColor;
-  onChange: (color: PlayerColor) => void;
-}) {
+function UploadIcon() {
   return (
-    <div
-      role="radiogroup"
-      aria-label="Side you played"
-      className="relative flex w-56 p-1 rounded-lg bg-[#21201d] border border-panelBorder"
-    >
-      <span
-        aria-hidden
-        className="absolute top-1 bottom-1 left-1 w-[calc(50%-0.25rem)] rounded-md bg-panelBorder transition-transform duration-200 ease-out"
-        style={{ transform: value === "Black" ? "translateX(100%)" : "none" }}
-      />
-      <ColorOption color="White" value={value} onChange={onChange} />
-      <ColorOption color="Black" value={value} onChange={onChange} />
-    </div>
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current" strokeWidth="2">
+      <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" strokeLinecap="round" />
+    </svg>
   );
 }
 
-function ColorOption({
-  color,
-  value,
-  onChange,
-}: {
-  color: PlayerColor;
-  value: PlayerColor;
-  onChange: (color: PlayerColor) => void;
-}) {
-  const active = value === color;
+function PlayIcon() {
   return (
-    <label
-      className={`relative z-10 flex-1 flex items-center justify-center gap-2 py-1.5 rounded-md font-semibold cursor-pointer transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent ${
-        active ? "text-white" : "text-[#8b8987] hover:text-[#e8e8e8]"
-      }`}
-    >
-      <input
-        type="radio"
-        name="player-color"
-        className="sr-only"
-        checked={active}
-        onChange={() => onChange(color)}
-      />
-      <span
-        className={`w-3.5 h-3.5 rounded-full border ${
-          color === "White" ? "bg-[#f5f5f0] border-[#d8d7d2]" : "bg-[#1a1917] border-[#5c5a57]"
-        }`}
-      />
-      {color}
-    </label>
+    <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+      <path d="M5.75 3.9a1 1 0 0 1 1.53-.85l9 6.1a1 1 0 0 1 0 1.7l-9 6.1a1 1 0 0 1-1.53-.85V3.9Z" />
+    </svg>
   );
+}
+
+function Spinner() {
+  return <span aria-hidden="true" className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />;
 }

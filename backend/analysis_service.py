@@ -58,26 +58,25 @@ class AnalysisService:
             info["error"] = str(exc)
         return info
 
-    def _cache_key(self, pgn, depth, player_color):
+    def _cache_key(self, pgn, depth):
         h = hashlib.sha1()
         h.update(pgn.strip().encode())
         h.update(str(depth).encode())
-        h.update(player_color.encode())
         return h.hexdigest()
 
-    def get_cached(self, pgn, depth, player_color):
-        key = self._cache_key(pgn, depth, player_color)
+    def get_cached(self, pgn, depth):
+        key = self._cache_key(pgn, depth)
         return self._cache.get(key)
 
-    def set_cached(self, pgn, depth, player_color, result):
-        key = self._cache_key(pgn, depth, player_color)
+    def set_cached(self, pgn, depth, result):
+        key = self._cache_key(pgn, depth)
         self._cache[key] = result
 
-    def analyze_streaming(self, pgn, depth=None, player_color="White"):
+    def analyze_streaming(self, pgn, depth=None):
         from backend.engine import analyze_game_streaming
 
         depth = min(MAX_DEPTH, depth or DEFAULT_DEPTH)
-        cached = self.get_cached(pgn, depth, player_color)
+        cached = self.get_cached(pgn, depth)
         if cached:
             yield "cached", cached
             return
@@ -98,7 +97,7 @@ class AnalysisService:
             self._lock.release()
 
         if complete_payload:
-            self.set_cached(pgn, depth, player_color, complete_payload)
+            self.set_cached(pgn, depth, complete_payload)
 
     def analyse_position(self, fen, depth=None, multipv=3):
         from backend.engine import analyse_fen

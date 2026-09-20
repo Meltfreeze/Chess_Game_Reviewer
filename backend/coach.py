@@ -21,6 +21,58 @@ _POSITIVE = {
 
 _PIECE_WORDS = {"pawn", "knight", "bishop", "rook", "queen", "king"}
 _SQUARE_RE = re.compile(r"\b[a-h][1-8]\b")
+_SUMMARY_CLASS_PATTERNS = {
+    "Blunder": re.compile(r"\bblunders?\b", re.IGNORECASE),
+    "Mistake": re.compile(r"\bmistakes?\b", re.IGNORECASE),
+    "Inaccuracy": re.compile(r"\binaccurac(?:y|ies)\b", re.IGNORECASE),
+    "Miss": re.compile(r"\bmiss(?:es|ed opportunities?)\b", re.IGNORECASE),
+    "Brilliant": re.compile(r"\bbrilliant moves?\b|\bbrillianc(?:y|ies)\b", re.IGNORECASE),
+    "Great": re.compile(r"\bgreat moves?\b", re.IGNORECASE),
+    "Excellent": re.compile(r"\bexcellent moves?\b", re.IGNORECASE),
+    "Good": re.compile(r"\bgood moves?\b", re.IGNORECASE),
+    "Best": re.compile(r"\bbest moves?\b", re.IGNORECASE),
+    "Book": re.compile(r"\bbook moves?\b", re.IGNORECASE),
+}
+_COUNT_WORDS = {
+    "no": 0,
+    "zero": 0,
+    "a": 1,
+    "an": 1,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+}
+_SUMMARY_INVENTORY_RE = re.compile(
+    r"\b(?:no|zero|one|two|three|four|five|\d+)\s+"
+    r"(?:book|best|good|excellent|great|brilliant|strong)\s+moves?\b|"
+    r"\b(?:no|zero|one|two|three|four|five|\d+)\s+"
+    r"(?:blunders?|mistakes?|inaccurac(?:y|ies)|miss(?:es|ed opportunities?))\b",
+    re.IGNORECASE,
+)
+_SUMMARY_NARRATIVE_RE = re.compile(
+    r"\b(?:decisive|turning point|allow(?:ed|ing)?|lead(?:ing)?|led|cost|"
+    r"miss(?:ed|ing)?|lost|won|convert(?:ed|ing)?|finish(?:ed|ing)?|checkmate|mate)\b",
+    re.IGNORECASE,
+)
+_SUMMARY_TURNING_CLASSES = {
+    "Blunder",
+    "Mistake",
+    "Inaccuracy",
+    "Miss",
+    "Brilliant",
+    "Great",
+}
+_SUMMARY_NEGATIVE_CLASSES = {"Blunder", "Mistake", "Inaccuracy", "Miss"}
+_SUMMARY_CLASS_PRIORITY = {
+    "Blunder": 6,
+    "Mistake": 5,
+    "Miss": 4,
+    "Inaccuracy": 3,
+    "Brilliant": 2,
+    "Great": 1,
+}
 
 
 def template_comment(move):
@@ -111,6 +163,155 @@ def _game_key(move_data):
     for m in move_data:
         h.update(f'{m["uci"]}{m["classification"]}'.encode())
     return h.hexdigest()
+
+
+def _classification_counts(move_data):
+    counts = {"White": {}, "Black": {}}
+    for move in move_data:
+        turn = move.get("turn")
+        classification = move.get("classification")
+        if turn not in counts or not isinstance(classification, str):
+            continue
+        counts[turn][classification] = counts[turn].get(classification, 0) + 1
+    return counts
+
+
+def _summary_context(move_data):
+    counts = _classification_counts(move_data)
+    opening = next(
+        (move.get("facts", {}).get("opening") for move in reversed(move_data)
+         if move.get("facts", {}).get("opening")),
+        None,
+    )
+    checkmate_by = None
+    checkmate_move = None
+    if move_data:
+        final_move = move_data[-1]
+        final_san = final_move.get("san") or final_move.get("facts", {}).get("played", "")
+        if isinstance(final_san, str) and final_san.endswith("#"):
+            checkmate_by = final_move.get("turn")
+            checkmate_move = _move_prompt_payload(final_move, len(move_data) - 1)
+    return {
+        "turning_points": _summary_turning_points(move_data),
+        "classification_counts": counts,
+        "opening": opening,
+        "checkmate_by": checkmate_by,
+        "checkmate_move": checkmate_move,
+    }
+
+
+def _move_prompt_payload(move, index):
+    return {
+        "id": index,
+        "turn": move.get("turn"),
+        "move_number": move.get("move_number"),
+        "san": move.get("san") or move.get("facts", {}).get("played"),
+        "classification": move.get("classification"),
+        "facts": move.get("prompt_str", ""),
+    }
+
+
+def _summary_turning_points(move_data, cap=2):
+    candidates = [
+        (index, move)
+        for index, move in enumerate(move_data)
+        if move.get("classification") in _SUMMARY_TURNING_CLASSES
+    ]
+    ranked = sorted(
+        candidates,
+        key=lambda item: (
+            float(item[1].get("cp_loss") or 0),
+            _SUMMARY_CLASS_PRIORITY.get(item[1].get("classification"), 0),
+        ),
+        reverse=True,
+    )[:cap]
+    return [
+        _move_prompt_payload(move, index)
+        for index, move in sorted(ranked, key=lambda item: item[0])
+    ]
+
+
+def _nearby_claimed_count(sentence, term_start):
+    prefix = sentence[max(0, term_start - 28):term_start]
+    matches = re.findall(r"\b(?:no|zero|a|an|one|two|three|four|five|\d+)\b", prefix,
+                         re.IGNORECASE)
+    if not matches:
+        return None
+    raw = matches[-1].lower()
+    return int(raw) if raw.isdigit() else _COUNT_WORDS[raw]
+
+
+def _claim_side(sentence, term_start):
+    mentions = []
+    for match in re.finditer(r"\bwhite\b", sentence, re.IGNORECASE):
+        mentions.append((match.start(), "White"))
+    for match in re.finditer(r"\bblack\b", sentence, re.IGNORECASE):
+        mentions.append((match.start(), "Black"))
+    if not mentions:
+        return None
+    preceding = [mention for mention in mentions if mention[0] <= term_start]
+    if preceding:
+        return max(preceding, key=lambda item: item[0])[1]
+    return min(mentions, key=lambda item: item[0])[1]
+
+
+def _validate_summary(summary, move_data):
+    """Reject prose whose side/classification claims contradict engine facts."""
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > 700:
+        return False
+    if _SUMMARY_INVENTORY_RE.search(summary):
+        return False
+
+    turning_points = _summary_turning_points(move_data)
+    if turning_points:
+        lower = summary.lower()
+        matching_points = [
+            point for point in turning_points
+            if _format_summary_move(move_data[point["id"]]).lower() in lower
+        ]
+        if not matching_points or not _SUMMARY_NARRATIVE_RE.search(summary):
+            return False
+        if not any(
+            isinstance(point.get("turn"), str)
+            and point["turn"].lower() in lower
+            for point in matching_points
+        ):
+            return False
+
+    context = _summary_context(move_data)
+    checkmate_move = context.get("checkmate_move")
+    if checkmate_move:
+        mate_label = _format_summary_move(move_data[checkmate_move["id"]]).lower()
+        if mate_label not in summary.lower():
+            return False
+
+    counts = _classification_counts(move_data)
+    for sentence_match in re.finditer(
+        r".+?(?:[!?]+|(?<!\.)\.(?=\s|$)|$)", summary
+    ):
+        sentence = sentence_match.group(0)
+        if not sentence.strip():
+            continue
+        for classification, pattern in _SUMMARY_CLASS_PATTERNS.items():
+            for claim in pattern.finditer(sentence):
+                side = _claim_side(sentence, claim.start())
+                if side is None:
+                    return False
+                actual = counts[side].get(classification, 0)
+                claimed = _nearby_claimed_count(sentence, claim.start())
+                if claimed is not None:
+                    if claimed != actual:
+                        return False
+                elif actual == 0:
+                    return False
+    allowed = set()
+    for move in move_data:
+        allowed.update(_allowed_tokens(move.get("prompt_str", "")))
+    lower = summary.lower()
+    for square in _SQUARE_RE.findall(lower):
+        if square not in allowed:
+            return False
+    return True
 
 
 def _allowed_tokens(prompt_str):
@@ -213,45 +414,76 @@ def _select_brief(move_data, notable_idxs):
     return brief[:20]
 
 
-def generate_coach(move_data, player_color, gemini_client, critical_moments=None,
-                   model="gemini-2.5-flash", _cache=None):
+def generate_coach(move_data, gemini_client, critical_moments=None,
+                   model="gemini-2.5-flash", _cache=None, status_out=None):
     if _cache is None:
         _cache = {}
+    if status_out is None:
+        status_out = {}
 
     key = _game_key(move_data)
     if key in _cache:
-        return _cache[key]
+        cached = _cache[key]
+        if len(cached) == 4:
+            status_out.update(cached[3])
+            return cached[:3]
+        return cached
 
     comments = [template_comment(m) for m in move_data]
     notable = _select_notable(move_data, critical_moments)
     brief = _select_brief(move_data, notable)
-    summary = _fallback_summary(move_data, player_color)
+    summary = _fallback_summary(move_data)
 
     if gemini_client is None:
+        status = {
+            "gemini_attempted": False,
+            "generation_complete": False,
+            "summary_generated": False,
+            "summary_accepted": False,
+            "requested_comments": len(notable) + len(brief),
+            "generated_comments": 0,
+            "accepted_comments": 0,
+            "fallback_used": True,
+        }
         result = (summary, comments, False)
-        _cache[key] = result
+        status_out.update(status)
+        _cache[key] = (*result, status)
         return result
 
-    payload_notable = [{"id": i, "classification": move_data[i]["classification"],
-                        "facts": move_data[i]["prompt_str"]} for i in notable]
-    payload_brief = [{"id": i, "classification": move_data[i]["classification"],
-                      "facts": move_data[i]["prompt_str"]} for i in brief]
+    summary_context = _summary_context(move_data)
+    payload_notable = [_move_prompt_payload(move_data[i], i) for i in notable]
+    payload_brief = [_move_prompt_payload(move_data[i], i) for i in brief]
 
     prompt = (
-        f"Player under review: {player_color}. Return JSON with:\n"
+        "Review White and Black equally. Return JSON with:\n"
         '{"summary": "<1-2 sentence game overview>", '
         '"comments": {"<move_id>": "<friendly comment, 1-2 sentences>"}, '
         '"brief": {"<move_id>": "<short one-liner>"}}\n'
         f"Use comments for key moves ({len(payload_notable)} moves) and brief for "
         f"routine moves ({len(payload_brief)} moves). Key moves need a brief why; "
-        f"routine moves need one line. Use ONLY provided facts.\n\n"
+        f"routine moves need one line. Use ONLY provided facts. Every move names "
+        f"the side that played it. The summary must tell the game's story in "
+        f"chronological terms: name the decisive move (with its move number and "
+        f"exact SAN), explain its verified consequence, and connect it to the "
+        f"result. Focus on at most two turning points. Name White or Black "
+        f"explicitly instead of saying 'you' or 'the opponent'. Do not enumerate "
+        f"classification totals or write a report-card inventory of Book, Best, "
+        f"Good, or other labels. Classification counts are supplied only to "
+        f"validate factual side attribution, not as summary content.\n\n"
+        f"SUMMARY FACTS: {json.dumps(summary_context)}\n"
         f"KEY MOVES: {json.dumps(payload_notable)}\n"
         f"ROUTINE MOVES: {json.dumps(payload_brief)}"
     )
 
-    all_comments_succeeded = False
+    commentary_succeeded = False
+    summary_generated = False
+    summary_succeeded = False
+    generated = set()
+    accepted = set()
+    gemini_attempted = False
     try:
         from google import genai
+        gemini_attempted = True
         resp = gemini_client.models.generate_content(
             model=model,
             contents=prompt,
@@ -262,17 +494,24 @@ def generate_coach(move_data, player_color, gemini_client, critical_moments=None
             ),
         )
         data = json.loads(resp.text.strip())
-        summary = data.get("summary", summary)
-        accepted = set()
+        generated_summary = data.get("summary")
+        summary_generated = isinstance(generated_summary, str) and bool(generated_summary.strip())
+        summary_succeeded = _validate_summary(generated_summary, move_data)
+        if summary_succeeded:
+            summary = generated_summary
 
-        def apply_comments(generated):
-            if not isinstance(generated, dict):
+        requested = set(notable) | set(brief)
+
+        def apply_comments(candidates):
+            if not isinstance(candidates, dict):
                 return
-            for raw_idx, candidate in generated.items():
+            for raw_idx, candidate in candidates.items():
                 try:
                     idx = int(raw_idx)
                     if not 0 <= idx < len(move_data):
                         continue
+                    if idx in requested:
+                        generated.add(idx)
                     if _validate_comment(candidate, move_data[idx]):
                         comments[idx] = candidate
                         accepted.add(idx)
@@ -283,15 +522,26 @@ def generate_coach(move_data, player_color, gemini_client, critical_moments=None
 
         apply_comments(data.get("comments", {}))
         apply_comments(data.get("brief", {}))
-        requested = set(notable) | set(brief)
-        all_comments_succeeded = requested.issubset(accepted)
+        commentary_succeeded = summary_succeeded and requested.issubset(accepted)
     except Exception:
         # The deterministic comments above are the safe default. A failed API
         # call or malformed response must degrade to them, not break review.
         pass
 
-    result = (summary, comments, all_comments_succeeded)
-    _cache[key] = result
+    requested = set(notable) | set(brief)
+    status = {
+        "gemini_attempted": gemini_attempted,
+        "generation_complete": summary_generated and requested.issubset(generated),
+        "summary_generated": summary_generated,
+        "summary_accepted": summary_succeeded,
+        "requested_comments": len(requested),
+        "generated_comments": len(generated),
+        "accepted_comments": len(accepted & requested),
+        "fallback_used": not commentary_succeeded,
+    }
+    result = (summary, comments, commentary_succeeded)
+    status_out.update(status)
+    _cache[key] = (*result, status)
     return result
 
 
@@ -347,30 +597,94 @@ def generate_move_comment(move, gemini_client, model="gemini-2.5-flash", _cache=
     return comment
 
 
-def _fallback_summary(move_data, player_color):
-    mine = [m for m in move_data if m["turn"] == player_color]
-    blunders = sum(1 for m in mine if m["classification"] == "Blunder")
-    mistakes = sum(1 for m in mine if m["classification"] == "Mistake")
-    misses = sum(1 for m in mine if m["classification"] == "Miss")
-    good = sum(1 for m in mine if m["classification"] in
-               ("Best", "Excellent", "Brilliant", "Great"))
+def _fallback_summary(move_data):
+    context = _summary_context(move_data)
 
-    if not mine:
+    if not move_data:
         return "Game reviewed. Step through the moves to see what happened."
 
-    def plural(k, word):
-        return f"{k} {word}" + ("" if k == 1 else "s")
+    opening = context.get("opening")
+    prefix = f"In the {opening}, " if opening else ""
 
-    parts = []
-    if blunders == 0 and mistakes == 0 and misses == 0:
-        return (f"Clean game — no major errors, with {plural(good, 'strong move')}. "
-                f"Well played!")
-    if good:
-        parts.append(f"{plural(good, 'strong move')}")
-    if blunders:
-        parts.append(plural(blunders, "blunder"))
-    if mistakes:
-        parts.append(plural(mistakes, "mistake"))
-    if misses:
-        parts.append(plural(misses, "missed opportunity"))
-    return f"You played {', '.join(parts)}. Review the marked moves below."
+    negative = [
+        move for move in move_data
+        if move.get("classification") in _SUMMARY_NEGATIVE_CLASSES
+    ]
+    decisive = max(
+        negative,
+        key=lambda move: (
+            float(move.get("cp_loss") or 0),
+            _SUMMARY_CLASS_PRIORITY.get(move.get("classification"), 0),
+        ),
+        default=None,
+    )
+    mate_move = context.get("checkmate_move")
+
+    if decisive:
+        side = decisive.get("turn") or "The mover"
+        move_label = _format_summary_move(decisive)
+        classification = decisive.get("classification", "error").lower()
+        if mate_move:
+            winner = context.get("checkmate_by") or "The winner"
+            mate_label = _format_summary_move(move_data[mate_move["id"]])
+            return (
+                f"{prefix}{side}'s {move_label} was the decisive {classification}, "
+                f"allowing {winner} to finish with {mate_label}."
+            )
+        consequence = _fallback_consequence(decisive)
+        if consequence:
+            return (
+                f"{prefix}{side}'s {move_label} was the key {classification}, "
+                f"{consequence}."
+            )
+        return (
+            f"{prefix}{side}'s {move_label} was the decisive {classification} "
+            "and the game's key turning point."
+        )
+
+    positive = [
+        move for move in move_data
+        if move.get("classification") in {"Brilliant", "Great"}
+    ]
+    if positive:
+        standout = max(positive, key=lambda move: float(move.get("cp_loss") or 0))
+        return (
+            f"{prefix}{standout.get('turn', 'The mover')}'s "
+            f"{_format_summary_move(standout)} was the game's standout "
+            f"{standout.get('classification', 'move').lower()}."
+        )
+
+    if mate_move:
+        return (
+            f"{prefix}{context.get('checkmate_by', 'The winner')} converted the game "
+            f"with {_format_summary_move(move_data[mate_move['id']])}."
+        )
+    return f"{prefix}the game had no single decisive classified turning point."
+
+
+def _format_summary_move(move):
+    san = move.get("san") or move.get("facts", {}).get("played") or "the move"
+    move_number = move.get("move_number")
+    if not move_number:
+        return san
+    separator = "." if move.get("turn") == "White" else "..."
+    return f"{move_number}{separator}{san}"
+
+
+def _fallback_consequence(move):
+    facts = move.get("facts", {})
+    hanging = facts.get("hanging") or []
+    if hanging:
+        target = str(hanging[0]).replace(" (pinned)", "")
+        if "(pinned)" in str(hanging[0]):
+            return f"leaving the {target} pinned and vulnerable"
+        return f"leaving the {target} vulnerable"
+    if facts.get("forcing_line"):
+        return f"running into {' '.join(facts['forcing_line'])}"
+    if facts.get("refutation"):
+        return f"allowing {facts['refutation']}"
+    if facts.get("missed_capture"):
+        return f"missing the stronger {facts['missed_capture']}"
+    if facts.get("best"):
+        return f"when {facts['best']} was stronger"
+    return None

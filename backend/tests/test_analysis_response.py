@@ -33,9 +33,7 @@ def test_analyze_complete_event_includes_commentary_status(monkeypatch):
         lambda *_args, **_kwargs: ("Summary", [], False),
     )
 
-    response = main.analyze_game(
-        main.AnalyzeRequest(pgn="1. e4", player_color="White", depth=8)
-    )
+    response = main.analyze_game(main.AnalyzeRequest(pgn="1. e4", depth=8))
     body = asyncio.run(_response_body(response))
     event = next(block for block in body.split("\n\n") if "event: complete" in block)
     payload = json.loads(next(
@@ -44,4 +42,8 @@ def test_analyze_complete_event_includes_commentary_status(monkeypatch):
         if line.startswith("data: ")
     ))
 
+    assert payload["commentary_succeeded"] is False
     assert payload["all_comments_succeeded"] is False
+    assert payload["commentary_status"]["fallback_used"] is True
+    assert payload["commentary_status"]["gemini_attempted"] is True
+    assert "player_color" not in payload

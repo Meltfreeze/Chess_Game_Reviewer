@@ -19,7 +19,6 @@ export function cpToWinPercent(cp: number): number {
 
 export interface AnalyzeOptions {
   pgn: string;
-  playerColor: "White" | "Black";
   depth?: number;
   onProgress?: (ply: number, total: number) => void;
 }
@@ -58,12 +57,12 @@ export async function reviewMove(options: ReviewMoveOptions): Promise<MoveReview
 }
 
 export async function analyzeGame(options: AnalyzeOptions): Promise<AnalysisResult> {
-  const { pgn, playerColor, depth = 16, onProgress } = options;
+  const { pgn, depth = 16, onProgress } = options;
 
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeader() },
-    body: JSON.stringify({ pgn, player_color: playerColor, depth }),
+    body: JSON.stringify({ pgn, depth }),
   });
 
   if (res.status === 401) {

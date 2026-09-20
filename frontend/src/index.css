@@ -42,3 +42,17 @@ body {
   scrollbar-color: #5c5a57 #302e2b;
   scrollbar-width: thin;
 }
+
+.status-progress-indeterminate {
+  width: 38%;
+  animation: status-progress 1.2s ease-in-out infinite;
+}
+
+@keyframes status-progress {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(365%);
+  }
+}

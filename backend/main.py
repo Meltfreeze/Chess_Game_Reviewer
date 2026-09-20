@@ -74,7 +74,6 @@ app.add_middleware(
 
 class AnalyzeRequest(BaseModel):
     pgn: str
-    player_color: str = Field(default="White", pattern="^(White|Black)$")
     depth: int = Field(default=DEFAULT_DEPTH, ge=8, le=MAX_DEPTH)
 
 
@@ -195,9 +194,7 @@ def analyze_game(req: AnalyzeRequest):
 
         complete = None
         try:
-            for event_type, payload in svc.analyze_streaming(
-                req.pgn, depth=req.depth, player_color=req.player_color
-            ):
+            for event_type, payload in svc.analyze_streaming(req.pgn, depth=req.depth):
                 if event_type == "cached":
                     complete = payload
                     yield _sse_event("progress", {"ply": payload["move_data"][-1]["ply"] + 1
@@ -214,13 +211,25 @@ def analyze_game(req: AnalyzeRequest):
                 yield _sse_event("error", {"message": "Analysis produced no result"})
                 return
 
-            summary, comments, all_comments_succeeded = coach_mod.generate_coach(
+            commentary_status = {}
+            summary, comments, commentary_succeeded = coach_mod.generate_coach(
                 complete["move_data"],
-                req.player_color,
                 gemini,
                 complete.get("critical_moments"),
                 _cache=_coach_cache,
+                status_out=commentary_status,
             )
+            if not commentary_status:
+                commentary_status = {
+                    "gemini_attempted": gemini is not None,
+                    "generation_complete": commentary_succeeded,
+                    "summary_generated": commentary_succeeded,
+                    "summary_accepted": commentary_succeeded,
+                    "requested_comments": 0,
+                    "generated_comments": 0,
+                    "accepted_comments": 0,
+                    "fallback_used": not commentary_succeeded,
+                }
 
             result = {
                 "move_data": complete["move_data"],
@@ -229,8 +238,11 @@ def analyze_game(req: AnalyzeRequest):
                 "hist": complete["hist"],
                 "critical_moments": complete["critical_moments"],
                 "coach": {"summary": summary, "comments": comments},
-                "all_comments_succeeded": all_comments_succeeded,
-                "player_color": req.player_color,
+                "commentary_succeeded": commentary_succeeded,
+                "commentary_status": commentary_status,
+                # Compatibility for clients deployed before the status was
+                # broadened from move comments to the complete commentary.
+                "all_comments_succeeded": commentary_succeeded,
             }
             yield _sse_event("complete", result)
         except (ValueError, TimeoutError) as exc:

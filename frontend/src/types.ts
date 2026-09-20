@@ -87,8 +87,20 @@ export interface AnalysisResult {
   hist: number[];
   critical_moments: CriticalMoment[];
   coach: { summary: string; comments: string[] };
-  all_comments_succeeded: boolean;
-  player_color: string;
+  commentary_succeeded?: boolean;
+  commentary_status?: CommentaryStatus;
+  all_comments_succeeded?: boolean;
+}
+
+export interface CommentaryStatus {
+  gemini_attempted: boolean;
+  generation_complete: boolean;
+  summary_generated: boolean;
+  summary_accepted: boolean;
+  requested_comments: number;
+  generated_comments: number;
+  accepted_comments: number;
+  fallback_used: boolean;
 }
 
 export interface MoveReviewResult {
@@ -110,4 +122,16 @@ export interface HealthInfo {
   gemini_configured?: boolean;
   default_depth?: number;
   error?: string;
+}
+
+export interface AnalysisFailure {
+  kind: "timeout" | "engine" | "unknown";
+  pgn: string;
+  depth: number;
+}
+
+export interface AnalysisCompletion {
+  pgn: string;
+  commentarySucceeded: boolean;
+  commentaryStatus?: CommentaryStatus;
 }
