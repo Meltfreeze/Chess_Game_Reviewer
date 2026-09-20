@@ -5,9 +5,15 @@ Gemini output is validated against engine facts; deterministic prose is the fall
 
 import json
 import hashlib
+import logging
 import re
 
 from backend.engine import NOTABLE
+
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 _POSITIVE = {
     "Brilliant": "Brilliant! A striking move that most players would never spot.",
@@ -21,6 +27,10 @@ _POSITIVE = {
 
 _PIECE_WORDS = {"pawn", "knight", "bishop", "rook", "queen", "king"}
 _SQUARE_RE = re.compile(r"\b[a-h][1-8]\b")
+_MOVE_NUMBER_RE = re.compile(
+    r"\b\d+\.(?:\.\.)?|\b(?:on\s+)?move\s+\d+\b",
+    re.IGNORECASE,
+)
 _SUMMARY_CLASS_PATTERNS = {
     "Blunder": re.compile(r"\bblunders?\b", re.IGNORECASE),
     "Mistake": re.compile(r"\bmistakes?\b", re.IGNORECASE),
@@ -138,7 +148,9 @@ _SYSTEM = (
     "about chess moves. Write plain-English commentary using ONLY those facts. "
     "Never invent threats, attacks, piece names, or squares that are not in the "
     "facts; name a move by the exact notation given (e.g. Nf3) rather than a piece "
-    "type the facts do not name. No jargon dumps. Output strict JSON only.\n"
+    "type the facts do not name. Never include move numbers such as '3.', '3...', "
+    "or 'move 3'; the SAN alone is sufficient. No jargon dumps. Output strict JSON "
+    "only.\n"
     "Blunder/Mistake/Inaccuracy/Miss/Great/Brilliant: say what happened and briefly "
     "why. A label by itself is invalid. Cite the most concrete available verified "
     "fact in this order: a pinned hanging piece; a forcing continuation; a missed "
@@ -204,7 +216,6 @@ def _move_prompt_payload(move, index):
     return {
         "id": index,
         "turn": move.get("turn"),
-        "move_number": move.get("move_number"),
         "san": move.get("san") or move.get("facts", {}).get("played"),
         "classification": move.get("classification"),
         "facts": move.get("prompt_str", ""),
@@ -255,9 +266,18 @@ def _claim_side(sentence, term_start):
     return min(mentions, key=lambda item: item[0])[1]
 
 
+def _summary_mentions_move(summary, move):
+    """Match a move by SAN without requiring or accepting a move number."""
+    san = _format_summary_move(move)
+    pattern = rf"(?<![A-Za-z0-9]){re.escape(san)}(?![A-Za-z0-9])"
+    return re.search(pattern, summary, re.IGNORECASE) is not None
+
+
 def _validate_summary(summary, move_data):
     """Reject prose whose side/classification claims contradict engine facts."""
     if not isinstance(summary, str) or not summary.strip() or len(summary) > 700:
+        return False
+    if _MOVE_NUMBER_RE.search(summary):
         return False
     if _SUMMARY_INVENTORY_RE.search(summary):
         return False
@@ -267,7 +287,7 @@ def _validate_summary(summary, move_data):
         lower = summary.lower()
         matching_points = [
             point for point in turning_points
-            if _format_summary_move(move_data[point["id"]]).lower() in lower
+            if _summary_mentions_move(summary, move_data[point["id"]])
         ]
         if not matching_points or not _SUMMARY_NARRATIVE_RE.search(summary):
             return False
@@ -281,8 +301,12 @@ def _validate_summary(summary, move_data):
     context = _summary_context(move_data)
     checkmate_move = context.get("checkmate_move")
     if checkmate_move:
-        mate_label = _format_summary_move(move_data[checkmate_move["id"]]).lower()
-        if mate_label not in summary.lower():
+        mate = move_data[checkmate_move["id"]]
+        mate_san = mate.get("san") or mate.get("facts", {}).get("played")
+        mentions_mate = _summary_mentions_move(summary, mate)
+        if isinstance(mate_san, str):
+            mentions_mate = mentions_mate or mate_san.lower() in summary.lower()
+        if not mentions_mate:
             return False
 
     counts = _classification_counts(move_data)
@@ -372,6 +396,8 @@ def _validate_comment(comment, move):
     """Reject hallucinations and unjustified notable-move commentary."""
     if not isinstance(comment, str) or not comment or len(comment) > 500:
         return False
+    if _MOVE_NUMBER_RE.search(comment):
+        return False
     prompt_str = move["prompt_str"]
     lower = comment.lower()
     allowed = _allowed_tokens(prompt_str)
@@ -415,7 +441,7 @@ def _select_brief(move_data, notable_idxs):
 
 
 def generate_coach(move_data, gemini_client, critical_moments=None,
-                   model="gemini-2.5-flash", _cache=None, status_out=None):
+                   model=DEFAULT_GEMINI_MODEL, _cache=None, status_out=None):
     if _cache is None:
         _cache = {}
     if status_out is None:
@@ -463,8 +489,8 @@ def generate_coach(move_data, gemini_client, critical_moments=None,
         f"routine moves ({len(payload_brief)} moves). Key moves need a brief why; "
         f"routine moves need one line. Use ONLY provided facts. Every move names "
         f"the side that played it. The summary must tell the game's story in "
-        f"chronological terms: name the decisive move (with its move number and "
-        f"exact SAN), explain its verified consequence, and connect it to the "
+        f"chronological terms: name the decisive move by its exact SAN without a "
+        f"move number, explain its verified consequence, and connect it to the "
         f"result. Focus on at most two turning points. Name White or Black "
         f"explicitly instead of saying 'you' or 'the opponent'. Do not enumerate "
         f"classification totals or write a report-card inventory of Book, Best, "
@@ -526,7 +552,7 @@ def generate_coach(move_data, gemini_client, critical_moments=None,
     except Exception:
         # The deterministic comments above are the safe default. A failed API
         # call or malformed response must degrade to them, not break review.
-        pass
+        logger.exception("Gemini game commentary generation failed")
 
     requested = set(notable) | set(brief)
     status = {
@@ -551,7 +577,7 @@ def _move_key(move):
     return h.hexdigest()
 
 
-def generate_move_comment(move, gemini_client, model="gemini-2.5-flash", _cache=None):
+def generate_move_comment(move, gemini_client, model=DEFAULT_GEMINI_MODEL, _cache=None):
     """Coach a single move — the single-move counterpart to generate_coach.
 
     generate_coach batches a whole game into one Gemini call and keys its cache
@@ -591,7 +617,7 @@ def generate_move_comment(move, gemini_client, model="gemini-2.5-flash", _cache=
             if _validate_comment(candidate, move):
                 comment = candidate
         except Exception:
-            pass
+            logger.exception("Gemini move commentary generation failed")
 
     _cache[key] = comment
     return comment
@@ -663,12 +689,7 @@ def _fallback_summary(move_data):
 
 
 def _format_summary_move(move):
-    san = move.get("san") or move.get("facts", {}).get("played") or "the move"
-    move_number = move.get("move_number")
-    if not move_number:
-        return san
-    separator = "." if move.get("turn") == "White" else "..."
-    return f"{move_number}{separator}{san}"
+    return move.get("san") or move.get("facts", {}).get("played") or "the move"
 
 
 def _fallback_consequence(move):

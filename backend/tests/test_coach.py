@@ -4,7 +4,12 @@ import json
 import sys
 import types
 
-from backend.coach import generate_coach, generate_move_comment, template_comment
+from backend.coach import (
+    DEFAULT_GEMINI_MODEL,
+    generate_coach,
+    generate_move_comment,
+    template_comment,
+)
 
 
 class _FakeModels:
@@ -20,6 +25,16 @@ class _FakeModels:
 class _FakeClient:
     def __init__(self, payload):
         self.models = _FakeModels(payload)
+
+
+class _FailingModels:
+    def generate_content(self, **_kwargs):
+        raise RuntimeError("provider rejected test key")
+
+
+class _FailingClient:
+    def __init__(self):
+        self.models = _FailingModels()
 
 
 def _install_fake_genai(monkeypatch):
@@ -207,21 +222,41 @@ def test_single_move_applies_the_same_citation_check(monkeypatch):
     _install_fake_genai(monkeypatch)
     move = _blunder_move()
 
+    rejected_client = _FakeClient({"comment": "This is a mistake."})
     rejected = generate_move_comment(
         move,
-        _FakeClient({"comment": "This is a mistake."}),
+        rejected_client,
         _cache={},
     )
     justified = "The pinned queen on d4 cannot escape the threat."
+    accepted_client = _FakeClient({"comment": justified})
     accepted = generate_move_comment(
         move,
-        _FakeClient({"comment": justified}),
+        accepted_client,
         _cache={},
     )
 
     assert rejected != "This is a mistake."
     assert "queen" in rejected.lower()
     assert accepted == justified
+    assert rejected_client.models.calls[0]["model"] == DEFAULT_GEMINI_MODEL
+    assert accepted_client.models.calls[0]["model"] == DEFAULT_GEMINI_MODEL
+    system_instruction = accepted_client.models.calls[0]["config"]["system_instruction"]
+    assert "Never include move numbers" in system_instruction
+
+
+def test_single_move_rejects_generated_move_number(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    move = _blunder_move()
+
+    comment = generate_move_comment(
+        move,
+        _FakeClient({"comment": "On move 3, the pinned queen on d4 is vulnerable."}),
+        _cache={},
+    )
+
+    assert comment == template_comment(move)
+    assert "move 3" not in comment.lower()
 
 
 def test_batch_without_gemini_returns_fact_based_fallback():
@@ -232,6 +267,34 @@ def test_batch_without_gemini_returns_fact_based_fallback():
     assert "queen" in comments[0].lower()
     assert "pinned" in comments[0].lower()
     assert not commentary_succeeded
+
+
+def test_batch_logs_gemini_failure_and_preserves_fallback(monkeypatch, caplog):
+    _install_fake_genai(monkeypatch)
+    move = _blunder_move()
+
+    with caplog.at_level("ERROR", logger="backend.coach"):
+        summary, comments, commentary_succeeded = generate_coach(
+            [move], _FailingClient(), _cache={}
+        )
+
+    assert summary
+    assert comments == [template_comment(move)]
+    assert not commentary_succeeded
+    assert "Gemini game commentary generation failed" in caplog.text
+    assert "provider rejected test key" in caplog.text
+
+
+def test_single_move_logs_gemini_failure_and_preserves_fallback(monkeypatch, caplog):
+    _install_fake_genai(monkeypatch)
+    move = _blunder_move()
+
+    with caplog.at_level("ERROR", logger="backend.coach"):
+        comment = generate_move_comment(move, _FailingClient(), _cache={})
+
+    assert comment == template_comment(move)
+    assert "Gemini move commentary generation failed" in caplog.text
+    assert "provider rejected test key" in caplog.text
 
 
 def test_fallback_uses_forcing_line_and_verified_sacrifice():
@@ -270,8 +333,8 @@ def test_summary_rejects_classification_attributed_to_wrong_side(monkeypatch):
 
     assert summary != wrong
     assert summary == (
-        "In the Bishop's Opening, Black's 3...Nf6 was the decisive blunder, "
-        "allowing White to finish with 4.Qxf7#."
+        "In the Bishop's Opening, Black's Nf6 was the decisive blunder, "
+        "allowing White to finish with Qxf7#."
     )
 
 
@@ -279,8 +342,8 @@ def test_summary_accepts_verified_turning_point_narrative(monkeypatch):
     _install_fake_genai(monkeypatch)
     moves = _scholars_mate_moves()
     verified = (
-        "In the Bishop's Opening, Black's 3...Nf6 was the decisive blunder, "
-        "allowing White to finish with 4.Qxf7#."
+        "In the Bishop's Opening, Black's Nf6 was the decisive blunder, "
+        "allowing White to finish with Qxf7#."
     )
 
     summary, _, _ = generate_coach(
@@ -290,6 +353,56 @@ def test_summary_accepts_verified_turning_point_narrative(monkeypatch):
     )
 
     assert summary == verified
+
+
+def test_summary_and_comments_accept_san_without_move_numbers(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    moves = _scholars_mate_moves()
+    generated = (
+        "After White played the inaccurate Qh5, Black committed a decisive "
+        "blunder with Nf6, allowing White to win with Qxf7#."
+    )
+    client = _FakeClient({
+        "summary": generated,
+        "comments": {
+            "0": "White's Qh5 is an inaccuracy in the Bishop's Opening.",
+            "1": "Black blundered with Nf6, allowing White to reply with Qxf7#.",
+        },
+        "brief": {"2": "White plays Qxf7# to give check."},
+    })
+    status = {}
+
+    summary, _, commentary_succeeded = generate_coach(
+        moves, client, _cache={}, status_out=status
+    )
+
+    assert summary == generated
+    assert commentary_succeeded
+    assert status["summary_accepted"] is True
+    assert status["fallback_used"] is False
+    assert client.models.calls[0]["model"] == "gemini-3.5-flash-lite"
+
+
+def test_summary_rejects_move_numbers(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    moves = _scholars_mate_moves()
+    generated = (
+        "White played the inaccurate 3. Qh5, but Black blundered with 3... Nf6, "
+        "allowing White to deliver checkmate with 4. Qxf7#."
+    )
+    status = {}
+
+    summary, _, _ = generate_coach(
+        moves,
+        _FakeClient({"summary": generated, "comments": {}, "brief": {}}),
+        _cache={},
+        status_out=status,
+    )
+
+    assert summary != generated
+    assert "3." not in summary
+    assert "4." not in summary
+    assert status["summary_accepted"] is False
 
 
 def test_summary_rejects_generic_text_that_omits_the_game_story(monkeypatch):
@@ -304,8 +417,8 @@ def test_summary_rejects_generic_text_that_omits_the_game_story(monkeypatch):
     )
 
     assert summary != generic
-    assert "Black's 3...Nf6" in summary
-    assert "4.Qxf7#" in summary
+    assert "Black's Nf6" in summary
+    assert "Qxf7#" in summary
 
 
 def test_summary_rejects_classification_inventory_even_when_counts_are_correct(monkeypatch):
@@ -323,8 +436,8 @@ def test_summary_rejects_classification_inventory_even_when_counts_are_correct(m
     )
 
     assert summary != wrong
-    assert "Black's 3...Nf6" in summary
-    assert "4.Qxf7#" in summary
+    assert "Black's Nf6" in summary
+    assert "Qxf7#" in summary
 
 
 def test_batch_prompt_requires_a_turning_point_narrative(monkeypatch):
@@ -334,6 +447,7 @@ def test_batch_prompt_requires_a_turning_point_narrative(monkeypatch):
     generate_coach(_scholars_mate_moves(), client, _cache={})
 
     prompt = client.models.calls[0]["contents"]
+    assert client.models.calls[0]["model"] == DEFAULT_GEMINI_MODEL
     assert '"turn": "White"' in prompt
     assert '"turn": "Black"' in prompt
     assert '"Inaccuracy": 1' in prompt
@@ -342,6 +456,8 @@ def test_batch_prompt_requires_a_turning_point_narrative(monkeypatch):
     assert '"turning_points"' in prompt
     assert '"san": "Nf6"' in prompt
     assert '"san": "Qxf7#"' in prompt
+    assert '"move_number"' not in prompt
+    assert "without a move number" in prompt
     assert "Do not enumerate classification totals" in prompt
 
 
@@ -354,5 +470,5 @@ def test_batch_cache_is_shared_for_side_neutral_review():
 
     assert len(cache) == 1
     assert first_summary == second_summary
-    assert first_summary.startswith("In the Bishop's Opening, Black's 3...Nf6")
-    assert "White to finish with 4.Qxf7#" in first_summary
+    assert first_summary.startswith("In the Bishop's Opening, Black's Nf6")
+    assert "White to finish with Qxf7#" in first_summary
