@@ -209,9 +209,10 @@ serialization. Frontend tests cover the analysis form and core review controls.
 
 ### Backend on Render
 
-Deploy from the repository root using `backend/Dockerfile`. The image installs
-Stockfish, copies the backend and classification icons, and starts Uvicorn on
-`PORT`.
+Deploy from the repository root using `backend/Dockerfile`. The image downloads
+the repository's Linux Stockfish 19 binary from Git LFS, verifies its pinned
+SHA-256 checksum and UCI version, copies the backend and classification icons,
+and starts Uvicorn on `PORT`.
 
 Configure at least:
 
@@ -221,6 +222,11 @@ Configure at least:
 
 The backend holds one shared engine process and an in-memory cache. Render cold
 starts restart both, and horizontal instances do not share cached results.
+
+After changing the engine binary or its checksum, deploy the latest `main`
+commit again. `/api/health` should report `/usr/local/bin/stockfish` and
+`Stockfish 19`; a checksum, architecture, or version mismatch fails the image
+build instead of silently deploying a different engine.
 
 ### Frontend on Vercel
 
