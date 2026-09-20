@@ -1,7 +1,6 @@
 """Persistent Stockfish engine singleton with analysis caching."""
 
 import hashlib
-import json
 import threading
 
 import chess.engine

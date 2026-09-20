@@ -284,7 +284,13 @@ def test_full_game_and_single_move_paths_expose_the_same_richer_facts():
     full_move = next(payload for event, payload in events if event == "complete")["move_data"][0]
 
     single_engine = _SwingStubEngine()
-    single_move = analyze_move(chess.STARTING_FEN, "e2e4", single_engine, depth=8)
+    single_move = analyze_move(
+        chess.STARTING_FEN,
+        "e2e4",
+        single_engine,
+        depth=8,
+        uci_history=[],
+    )
 
     for entry in (full_move, single_move):
         assert entry["classification"] == "Blunder"
@@ -292,5 +298,6 @@ def test_full_game_and_single_move_paths_expose_the_same_richer_facts():
         assert len(entry["facts"]["forcing_line"]) >= 2
         assert len(entry["facts"]["best_line"]) >= 2
         assert entry["facts"]["refutation"]
+    assert full_move == single_move
     assert stream_engine.calls == 2
     assert single_engine.calls == 2

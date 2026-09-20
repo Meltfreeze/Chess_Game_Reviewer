@@ -7,7 +7,7 @@ import json
 import hashlib
 import re
 
-from backend.engine import NOTABLE, CRITICAL_CLASSES
+from backend.engine import NOTABLE
 
 _POSITIVE = {
     "Brilliant": "Brilliant! A striking move that most players would never spot.",

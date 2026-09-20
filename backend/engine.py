@@ -790,6 +790,118 @@ def _critical_moments(move_data):
     return moments
 
 
+def _build_move_entry(board_before, board, move, prev_info, info,
+                      prev_cp_white, curr_cp_white, is_book, opening_name,
+                      previous_move, previous_move_was_capture, engine, limit,
+                      ply):
+    """Build one reviewed-move entry from the caller's existing searches."""
+    mover = board_before.turn
+    san = board_before.san(move)
+    best_move = prev_info[0]["pv"][0] if prev_info[0].get("pv") else None
+    best_line = _pv_to_san(board_before, prev_info[0].get("pv", []))
+    second_cp_white = (_score_white_cp(prev_info[1])
+                       if len(prev_info) > 1 else prev_cp_white)
+    is_mate_delivered = board.is_checkmate()
+    pov = info[0]["score"].white()
+    multipv_signals = _multipv_signals(board_before, prev_info, board, info)
+
+    opp_reply_san = None
+    if info[0].get("pv"):
+        try:
+            opp_reply_san = board.san(info[0]["pv"][0])
+        except Exception:
+            opp_reply_san = None
+
+    if mover == chess.WHITE:
+        prev_cp, curr_cp, second_cp = prev_cp_white, curr_cp_white, second_cp_white
+    else:
+        prev_cp, curr_cp, second_cp = -prev_cp_white, -curr_cp_white, -second_cp_white
+
+    best_wp = cp_to_wp(prev_cp)
+    second_best_wp = cp_to_wp(second_cp)
+    legal_move_count = board_before.legal_moves.count()
+    brilliant_candidate, sacrifice_evidence = evaluate_brilliant(
+        board_before,
+        move,
+        best_move,
+        best_wp,
+        legal_move_count,
+        is_book,
+        is_mate_delivered,
+        info,
+        engine,
+        limit,
+        previous_move=previous_move,
+        previous_move_was_capture=previous_move_was_capture,
+    )
+    great_candidate = is_great(
+        move,
+        best_move,
+        best_wp,
+        second_best_wp,
+        legal_move_count,
+        board_before,
+        is_book=is_book,
+        is_mate=is_mate_delivered,
+        is_brilliant=brilliant_candidate,
+        previous_move=previous_move,
+        previous_move_was_capture=previous_move_was_capture,
+    )
+
+    phase = _game_phase(board, ply)
+    base_class = classify_move(
+        prev_cp,
+        curr_cp,
+        great_candidate,
+        brilliant_candidate,
+        is_book,
+        is_mate_delivered,
+    )
+    is_miss = is_miss_move(board_before, move, best_move, prev_cp, curr_cp, base_class)
+    classification = classify_move(
+        prev_cp,
+        curr_cp,
+        great_candidate,
+        brilliant_candidate,
+        is_book,
+        is_mate_delivered,
+        is_miss=is_miss,
+    )
+
+    cp_loss = min(1000, max(0, prev_cp - curr_cp))
+    facts, prompt_str = extract_facts(
+        board_before, move, best_move, prev_cp, curr_cp,
+        classification, opp_reply_san, opening_name, phase,
+        is_sacrifice=sacrifice_evidence["verified"],
+        best_line=best_line,
+        **multipv_signals)
+
+    return {
+        "ply": ply,
+        "move_number": (ply // 2) + 1,
+        "turn": "White" if mover == chess.WHITE else "Black",
+        "san": san,
+        "uci": move.uci(),
+        "fen": board.fen(),
+        "fen_before": board_before.fen(),
+        "eval": _eval_str(pov),
+        "eval_cp_white": curr_cp_white,
+        "classification": classification,
+        "facts": facts,
+        "prompt_str": prompt_str,
+        "cp_loss": cp_loss,
+        "best_line": best_line,
+        "best_uci": best_move.uci() if best_move else None,
+        "best_move": best_move.uci() if best_move else None,
+        "played_move": move.uci(),
+        "best_wp": best_wp,
+        "second_best_wp": second_best_wp,
+        "legal_move_count": legal_move_count,
+        "eval_swing": abs((curr_cp - prev_cp) / 100),
+        "phase": phase,
+    }
+
+
 def analyze_game_streaming(pgn_str, engine, depth=18):
     """Generator yielding (event_type, payload) for SSE streaming."""
     game = chess.pgn.read_game(io.StringIO(pgn_str))
@@ -828,67 +940,21 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
         mover = board.turn
         previous_move, previous_move_was_capture = _previous_capture_context(board)
         board_before = board.copy(stack=False)
-        best_move = prev_info[0]["pv"][0] if prev_info[0].get("pv") else None
-        best_line = _pv_to_san(board_before, prev_info[0].get("pv", []))
-        san = board.san(move)
 
         stays_in_book = is_book_move(uci_history, move.uci())
-        second_cp_white = (_score_white_cp(prev_info[1])
-                           if len(prev_info) > 1 else prev_cp_white)
 
         board.push(move)
         uci_history.append(move.uci())
-        is_mate_delivered = board.is_checkmate()
 
         info = engine.analyse(board, limit, multipv=2)
         curr_cp_white = _score_white_cp(info[0])
-        pov = info[0]["score"].white()
         eval_history.append(max(-10, min(10, curr_cp_white / 100)))
-        multipv_signals = _multipv_signals(board_before, prev_info, board, info)
-
-        opp_reply_san = None
-        if info[0].get("pv"):
-            try:
-                opp_reply_san = board.san(info[0]["pv"][0])
-            except Exception:
-                opp_reply_san = None
 
         if mover == chess.WHITE:
-            prev_cp, curr_cp, second_cp = prev_cp_white, curr_cp_white, second_cp_white
+            curr_cp = curr_cp_white
         else:
-            prev_cp, curr_cp, second_cp = -prev_cp_white, -curr_cp_white, -second_cp_white
-
-        best_wp = cp_to_wp(prev_cp)
-        second_best_wp = cp_to_wp(second_cp)
-        legal_move_count = board_before.legal_moves.count()
+            curr_cp = -curr_cp_white
         is_book = stays_in_book and abs(curr_cp) < 80
-        brilliant_candidate, sacrifice_evidence = evaluate_brilliant(
-            board_before,
-            move,
-            best_move,
-            best_wp,
-            legal_move_count,
-            is_book,
-            is_mate_delivered,
-            info,
-            engine,
-            limit,
-            previous_move=previous_move,
-            previous_move_was_capture=previous_move_was_capture,
-        )
-        great_candidate = is_great(
-            move,
-            best_move,
-            best_wp,
-            second_best_wp,
-            legal_move_count,
-            board_before,
-            is_book=is_book,
-            is_mate=is_mate_delivered,
-            is_brilliant=brilliant_candidate,
-            previous_move=previous_move,
-            previous_move_was_capture=previous_move_was_capture,
-        )
 
         eco, opening_name = lookup_opening(uci_history)
         if opening_name:
@@ -897,67 +963,31 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
             metadata["ECO"] = eco
             metadata["Opening"] = opening_name
 
-        phase = _game_phase(board, ply)
-        eval_swing = abs((curr_cp - prev_cp) / 100)
-
-        base_class = classify_move(
-            prev_cp,
-            curr_cp,
-            great_candidate,
-            brilliant_candidate,
+        entry = _build_move_entry(
+            board_before,
+            board,
+            move,
+            prev_info,
+            info,
+            prev_cp_white,
+            curr_cp_white,
             is_book,
-            is_mate_delivered,
+            opening_name,
+            previous_move,
+            previous_move_was_capture,
+            engine,
+            limit,
+            ply,
         )
-        is_miss = is_miss_move(board_before, move, best_move, prev_cp, curr_cp, base_class)
-        classification = classify_move(
-            prev_cp,
-            curr_cp,
-            great_candidate,
-            brilliant_candidate,
-            is_book,
-            is_mate_delivered,
-            is_miss=is_miss,
-        )
-
-        cp_loss = min(1000, max(0, prev_cp - curr_cp))
+        cp_loss = entry["cp_loss"]
         total_cp_loss[mover] += cp_loss
         counted[mover] += 1
 
+        prev_cp = prev_cp_white if mover == chess.WHITE else -prev_cp_white
         win_before, win_after = _win_percent(prev_cp), _win_percent(curr_cp)
         move_accuracies[mover].append(_move_accuracy(win_before, win_after))
         win_after_seq[mover].append(win_after)
 
-        facts, prompt_str = extract_facts(
-            board_before, move, best_move, prev_cp, curr_cp,
-            classification, opp_reply_san, opening_name, phase,
-            is_sacrifice=sacrifice_evidence["verified"],
-            best_line=best_line,
-            **multipv_signals)
-
-        entry = {
-            "ply": ply,
-            "move_number": (ply // 2) + 1,
-            "turn": "White" if mover == chess.WHITE else "Black",
-            "san": san,
-            "uci": move.uci(),
-            "fen": board.fen(),
-            "fen_before": board_before.fen(),
-            "eval": _eval_str(pov),
-            "eval_cp_white": curr_cp_white,
-            "classification": classification,
-            "facts": facts,
-            "prompt_str": prompt_str,
-            "cp_loss": cp_loss,
-            "best_line": best_line,
-            "best_uci": best_move.uci() if best_move else None,
-            "best_move": best_move.uci() if best_move else None,
-            "played_move": move.uci(),
-            "best_wp": best_wp,
-            "second_best_wp": second_best_wp,
-            "legal_move_count": legal_move_count,
-            "eval_swing": eval_swing,
-            "phase": phase,
-        }
         move_data.append(entry)
 
         yield "progress", {"ply": ply + 1, "total": total_moves, "move": entry}
@@ -1029,38 +1059,12 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
     limit = chess.engine.Limit(depth=depth, time=ENGINE_TIME_LIMIT_SECONDS)
     prev_info = engine.analyse(board_before, limit, multipv=2)
     prev_cp_white = _score_white_cp(prev_info[0])
-    second_cp_white = (_score_white_cp(prev_info[1])
-                       if len(prev_info) > 1 else prev_cp_white)
-    best_move = prev_info[0]["pv"][0] if prev_info[0].get("pv") else None
-    best_line = _pv_to_san(board_before, prev_info[0].get("pv", []))
-
-    mover = board_before.turn
-    san = board_before.san(move)
 
     board = board_before.copy(stack=False)
     board.push(move)
-    is_mate_delivered = board.is_checkmate()
 
     info = engine.analyse(board, limit, multipv=2)
     curr_cp_white = _score_white_cp(info[0])
-    pov = info[0]["score"].white()
-    multipv_signals = _multipv_signals(board_before, prev_info, board, info)
-
-    opp_reply_san = None
-    if info[0].get("pv"):
-        try:
-            opp_reply_san = board.san(info[0]["pv"][0])
-        except Exception:
-            opp_reply_san = None
-
-    if mover == chess.WHITE:
-        prev_cp, curr_cp, second_cp = prev_cp_white, curr_cp_white, second_cp_white
-    else:
-        prev_cp, curr_cp, second_cp = -prev_cp_white, -curr_cp_white, -second_cp_white
-
-    best_wp = cp_to_wp(prev_cp)
-    second_best_wp = cp_to_wp(second_cp)
-    legal_move_count = board_before.legal_moves.count()
     previous_move, previous_move_was_capture = _history_capture_context(
         board_before, uci_history
     )
@@ -1071,88 +1075,27 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
         # Same convention as analyze_game_streaming: both the book test and the
         # opening name see the line *including* the move being judged, so the
         # same move gets the same classification either way.
+        mover = board_before.turn
+        curr_cp = curr_cp_white if mover == chess.WHITE else -curr_cp_white
         is_book = is_book_move(uci_history, move.uci()) and abs(curr_cp) < 80
         _, opening_name = lookup_opening([*uci_history, move.uci()])
 
-    brilliant_candidate, sacrifice_evidence = evaluate_brilliant(
+    return _build_move_entry(
         board_before,
+        board,
         move,
-        best_move,
-        best_wp,
-        legal_move_count,
-        is_book,
-        is_mate_delivered,
+        prev_info,
         info,
+        prev_cp_white,
+        curr_cp_white,
+        is_book,
+        opening_name,
+        previous_move,
+        previous_move_was_capture,
         engine,
         limit,
-        previous_move=previous_move,
-        previous_move_was_capture=previous_move_was_capture,
+        ply,
     )
-    great_candidate = is_great(
-        move,
-        best_move,
-        best_wp,
-        second_best_wp,
-        legal_move_count,
-        board_before,
-        is_book=is_book,
-        is_mate=is_mate_delivered,
-        is_brilliant=brilliant_candidate,
-        previous_move=previous_move,
-        previous_move_was_capture=previous_move_was_capture,
-    )
-
-    phase = _game_phase(board, ply)
-    base_class = classify_move(
-        prev_cp,
-        curr_cp,
-        great_candidate,
-        brilliant_candidate,
-        is_book,
-        is_mate_delivered,
-    )
-    is_miss = is_miss_move(board_before, move, best_move, prev_cp, curr_cp, base_class)
-    classification = classify_move(
-        prev_cp,
-        curr_cp,
-        great_candidate,
-        brilliant_candidate,
-        is_book,
-        is_mate_delivered,
-        is_miss=is_miss,
-    )
-
-    facts, prompt_str = extract_facts(
-        board_before, move, best_move, prev_cp, curr_cp,
-        classification, opp_reply_san, opening_name, phase,
-        is_sacrifice=sacrifice_evidence["verified"],
-        best_line=best_line,
-        **multipv_signals)
-
-    return {
-        "ply": ply,
-        "move_number": (ply // 2) + 1,
-        "turn": "White" if mover == chess.WHITE else "Black",
-        "san": san,
-        "uci": move.uci(),
-        "fen": board.fen(),
-        "fen_before": board_before.fen(),
-        "eval": _eval_str(pov),
-        "eval_cp_white": curr_cp_white,
-        "classification": classification,
-        "facts": facts,
-        "prompt_str": prompt_str,
-        "cp_loss": min(1000, max(0, prev_cp - curr_cp)),
-        "best_line": best_line,
-        "best_uci": best_move.uci() if best_move else None,
-        "best_move": best_move.uci() if best_move else None,
-        "played_move": move.uci(),
-        "best_wp": best_wp,
-        "second_best_wp": second_best_wp,
-        "legal_move_count": legal_move_count,
-        "eval_swing": abs((curr_cp - prev_cp) / 100),
-        "phase": phase,
-    }
 
 
 def analyse_fen(fen, engine, depth=18, multipv=3):

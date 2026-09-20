@@ -5,7 +5,6 @@ import { BADGE_COLORS } from "../constants";
 interface CoachPanelProps {
   summary: string;
   comment: string;
-  headline?: string;
   classification?: Classification | null;
   bestLine?: string[];
   loading?: boolean;
@@ -15,7 +14,6 @@ interface CoachPanelProps {
 export default function CoachPanel({
   summary,
   comment,
-  headline,
   classification,
   bestLine,
   loading = false,
@@ -36,7 +34,6 @@ export default function CoachPanel({
           </span>
         </div>
       )}
-      {headline && <div className="font-bold mb-1" dangerouslySetInnerHTML={{ __html: headline }} />}
       {loading ? (
         <div className="flex items-center gap-2 text-gray-500">
           <span className="w-4 h-4 rounded-full border-2 border-gray-400 border-t-transparent animate-spin" />
