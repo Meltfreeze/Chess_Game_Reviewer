@@ -306,7 +306,7 @@ def test_adaptive_review_deepens_great_with_multipv_two():
     entry = analyze_move(chess.STARTING_FEN, "e2e4", engine, depth=16)
 
     assert entry["classification"] == "Great"
-    assert [depth for _fen, depth, _pv in engine.searches] == [10, 10, 16, 16]
+    assert [depth for _fen, depth, _pv in engine.searches] == [10, 16, 16]
     assert {multipv for _fen, _depth, multipv in engine.searches} == {2}
 
 
@@ -316,7 +316,7 @@ def test_deep_runner_up_can_reject_shallow_great_candidate():
 
     assert entry["classification"] == "Best"
     assert entry["second_best_wp"] > 0.5
-    assert [depth for _fen, depth, _pv in engine.searches] == [10, 10, 16, 16]
+    assert [depth for _fen, depth, _pv in engine.searches] == [10, 16, 16]
 
 
 def test_deep_search_can_promote_shallow_runner_up_to_great():
@@ -324,7 +324,7 @@ def test_deep_search_can_promote_shallow_runner_up_to_great():
     entry = analyze_move(chess.STARTING_FEN, "e2e4", engine, depth=16)
 
     assert entry["classification"] == "Great"
-    assert [depth for _fen, depth, _pv in engine.searches] == [10, 10, 16, 16]
+    assert [depth for _fen, depth, _pv in engine.searches] == [10, 16, 16]
 
 
 def test_adaptive_stream_reuses_deep_position_for_adjacent_moves(monkeypatch):
@@ -363,6 +363,32 @@ def test_tactical_capture_gets_deep_review():
     )
 
     assert entry["uci"] == "e1e2"
+    assert [depth for _fen, depth, _pv in engine.searches] == [10, 16, 16]
+
+
+def test_quiet_move_with_eval_swing_still_gets_deep_review():
+    class BadMoveEngine(_AdaptiveEngine):
+        def analyse(self, board, limit, multipv=2):
+            infos = super().analyse(board, limit, multipv=multipv)
+            if board.fen() == chess.STARTING_FEN:
+                infos[1]["score"] = chess.engine.PovScore(
+                    chess.engine.Cp(15), chess.WHITE
+                )
+            if board.turn == chess.BLACK:
+                for info in infos:
+                    info["score"] = chess.engine.PovScore(
+                        chess.engine.Cp(-300), chess.WHITE
+                    )
+            return infos
+
+    engine = BadMoveEngine()
+    analyze_move(
+        chess.STARTING_FEN,
+        "a2a3",
+        engine,
+        depth=16,
+    )
+
     assert [depth for _fen, depth, _pv in engine.searches] == [10, 10, 16, 16]
 
 

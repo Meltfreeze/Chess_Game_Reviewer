@@ -916,22 +916,13 @@ def _review_limits(depth):
     return fast, deep
 
 
-def _needs_deep_review(before, move, after, before_info, after_info,
-                       stays_in_book=False):
-    """Choose moves needing a full search from verified shallow MultiPV data."""
+def _needs_deep_from_position(before, move, before_info):
+    """Recognize deep-review candidates before searching the next position."""
     mover = before.turn
     best_line = before_info[0].get("pv", [])
     best_move = best_line[0] if best_line else None
-    before_cp = _score_mover_cp(before_info[0], mover)
-    after_cp = _score_mover_cp(after_info[0], mover)
-    loss = cp_to_wp(before_cp) - cp_to_wp(after_cp)
-
-    if stays_in_book and abs(after_cp) < 80:
-        return False
     if (before.is_capture(move) or before.gives_check(move)
-            or before.is_check() or after.is_check() or move.promotion):
-        return True
-    if abs(loss) >= 0.03 or (best_move != move and loss >= 0.015):
+            or before.is_check() or move.promotion):
         return True
     # A Great candidate needs a full-depth best/runner-up comparison. Also
     # revisit played runner-up moves in case deeper search reverses their order.
@@ -939,6 +930,7 @@ def _needs_deep_review(before, move, after, before_info, after_info,
             and not is_trivially_obvious(move, before)):
         return True
     if len(before_info) > 1:
+        before_cp = _score_mover_cp(before_info[0], mover)
         second_cp = _score_mover_cp(before_info[1], mover)
         best_wp, second_wp = cp_to_wp(before_cp), cp_to_wp(second_cp)
         if is_unique_best(best_wp, second_wp):
@@ -949,6 +941,22 @@ def _needs_deep_review(before, move, after, before_info, after_info,
     piece = before.piece_at(move.from_square)
     return bool(piece and piece.piece_type in BRILLIANT_PIECES
                 and _sacrifice_candidate(before, move)["candidate"])
+
+
+def _needs_deep_review(before, move, before_info, after_info,
+                       stays_in_book=False):
+    """Use the fast reply search to catch evaluation swings and missed moves."""
+    mover = before.turn
+    after_cp = _score_mover_cp(after_info[0], mover)
+    if stays_in_book and abs(after_cp) < 80:
+        return False
+    if _needs_deep_from_position(before, move, before_info):
+        return True
+    before_cp = _score_mover_cp(before_info[0], mover)
+    loss = cp_to_wp(before_cp) - cp_to_wp(after_cp)
+    best_line = before_info[0].get("pv", [])
+    best_move = best_line[0] if best_line else None
+    return abs(loss) >= 0.03 or (best_move != move and loss >= 0.015)
 
 
 def analyze_game_streaming(pgn_str, engine, depth=18):
@@ -1020,17 +1028,26 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
 
         board.push(move)
         uci_history.append(move.uci())
-        info = engine.analyse(board, fast_limit, multipv=2)
-        if fast_limit is not deep_limit and _needs_deep_review(
-                board_before, move, board, prev_info, info,
-                stays_in_book=stays_in_book):
+        deep_now = (fast_limit is not deep_limit and not stays_in_book
+                    and _needs_deep_from_position(board_before, move, prev_info))
+        if deep_now:
             if not prev_is_deep:
                 prev_info = engine.analyse(board_before, deep_limit, multipv=2)
                 prev_is_deep = True
             info = engine.analyse(board, deep_limit, multipv=2)
             info_is_deep = True
         else:
-            info_is_deep = fast_limit is deep_limit
+            info = engine.analyse(board, fast_limit, multipv=2)
+            if fast_limit is not deep_limit and _needs_deep_review(
+                    board_before, move, prev_info, info,
+                    stays_in_book=stays_in_book):
+                if not prev_is_deep:
+                    prev_info = engine.analyse(board_before, deep_limit, multipv=2)
+                    prev_is_deep = True
+                info = engine.analyse(board, deep_limit, multipv=2)
+                info_is_deep = True
+            else:
+                info_is_deep = fast_limit is deep_limit
 
         if pending is not None:
             entry = finish_move(pending, prev_info)
@@ -1118,14 +1135,20 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
     board = board_before.copy(stack=False)
     board.push(move)
 
-    info = engine.analyse(board, fast_limit, multipv=2)
     stays_in_book = (uci_history is not None
                      and is_book_move(uci_history, move.uci()))
-    if fast_limit is not deep_limit and _needs_deep_review(
-            board_before, move, board, prev_info, info,
-            stays_in_book=stays_in_book):
+    deep_now = (fast_limit is not deep_limit and not stays_in_book
+                and _needs_deep_from_position(board_before, move, prev_info))
+    if deep_now:
         prev_info = engine.analyse(board_before, deep_limit, multipv=2)
         info = engine.analyse(board, deep_limit, multipv=2)
+    else:
+        info = engine.analyse(board, fast_limit, multipv=2)
+        if fast_limit is not deep_limit and _needs_deep_review(
+                board_before, move, prev_info, info,
+                stays_in_book=stays_in_book):
+            prev_info = engine.analyse(board_before, deep_limit, multipv=2)
+            info = engine.analyse(board, deep_limit, multipv=2)
     prev_cp_white = _score_white_cp(prev_info[0])
     curr_cp_white = _score_white_cp(info[0])
     previous_move, previous_move_was_capture = _history_capture_context(

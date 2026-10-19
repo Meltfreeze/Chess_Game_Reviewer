@@ -31,8 +31,8 @@ Browser
 
 Backend
   -> serialize Stockfish access through AnalysisService
-  -> search every position quickly with MultiPV=2
-  -> deepen tactical, uncertain, and likely Great/Brilliant moves
+  -> search positions with MultiPV=2 at fast or deep limits
+  -> deepen uncertain and likely Great/Brilliant moves
   -> classify moves and derive verified facts in engine.py
   -> turn those facts into prose in coach.py
   -> reject unsupported or unjustified LLM comments
@@ -174,10 +174,12 @@ git lfs pull
 Keep backend secrets in the backend deployment environment. Do not expose
 `AUTH_SECRET` or `GEMINI_API_KEY` through `VITE_` variables.
 
-Game review uses the requested depth for selected critical positions. The fast
-pass keeps two engine lines so Great move checks still compare the best and
-runner-up moves. A later move can trigger a deeper search of its starting
-position, so progress for a reviewed move is emitted after the following move
+Game review uses the requested depth for selected critical positions. Both
+search limits keep two engine lines so Great move checks compare the best and
+runner-up moves. When a move is already known to need deep review, the engine
+skips the redundant fast search of its destination. A later move can still
+trigger a deeper search of its starting position, so progress for a reviewed
+move is emitted after the following move
 has been inspected. Shallow and deep searches may produce different move
 labels; increase the fast depth if you need closer agreement with a full-depth
 review at the cost of speed.
