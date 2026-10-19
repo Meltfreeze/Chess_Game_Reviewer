@@ -6,6 +6,7 @@ import types
 
 from backend.coach import (
     DEFAULT_GEMINI_MODEL,
+    _compact_move_facts,
     generate_coach,
     generate_move_comment,
     template_comment,
@@ -99,6 +100,7 @@ def _scholars_mate_moves():
                 "played": "Nf6",
                 "class": "Blunder",
                 "opening": "Bishop's Opening",
+                "refutation": "Qxf7#",
             },
             "prompt_str": "Nf6 (Blunder); opening: Bishop's Opening; opponent can reply Qxf7#",
         },
@@ -113,6 +115,7 @@ def _scholars_mate_moves():
                 "played": "Qxf7#",
                 "class": "Best",
                 "opening": "Bishop's Opening",
+                "is_check": True,
             },
             "prompt_str": "Qxf7# (Best); opening: Bishop's Opening; gives check",
         },
@@ -154,6 +157,115 @@ def test_batch_keeps_comment_that_cites_verified_fact(monkeypatch):
     assert status["generation_complete"] is True
     assert status["fallback_used"] is False
     assert status["accepted_comments"] == 1
+
+
+def test_batch_requests_only_notable_moves_with_compact_verified_facts(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    notable = _blunder_move()
+    notable["facts"]["opening"] = "Bishop's Opening"
+    routine = {
+        "turn": "Black",
+        "uci": "h8h7",
+        "san": "Kh7",
+        "classification": "Best",
+        "cp_loss": 0,
+        "facts": {"played": "Kh7", "class": "Best"},
+        "prompt_str": "Kh7 (Best); phase: endgame; engine preferred Kh7",
+    }
+    client = _FakeClient({
+        "summary": "White's Qd4 was the decisive blunder, leaving the queen pinned.",
+        "comments": {
+            "0": "Your pinned queen on d4 is left vulnerable.",
+            "1": "Gemini's unsolicited routine comment.",
+        },
+        "brief": {"1": "Another unsolicited routine comment."},
+    })
+    status = {}
+
+    _, comments, succeeded = generate_coach(
+        [notable, routine], client, _cache={}, status_out=status
+    )
+
+    prompt = client.models.calls[0]["contents"]
+    key_moves = json.loads(prompt.split("KEY MOVES: ", 1)[1])
+    assert len(client.models.calls) == 1
+    assert key_moves == [{
+        "id": 0,
+        "turn": "White",
+        "san": "Qd4",
+        "classification": "Blunder",
+        "facts": {
+            "eval": [0.2, -2.3],
+            "hanging": ["queen on d4 (pinned)"],
+            "refutation": "Nxd4",
+            "best": "Nf3",
+        },
+    }]
+    assert "ROUTINE MOVES" not in prompt
+    assert "engine preferred Nf3" not in prompt
+    assert "Bishop's Opening" not in json.dumps(key_moves)
+    assert comments[1] == template_comment(routine)
+    assert status["requested_comments"] == 1
+    assert status["generated_comments"] == 1
+    assert status["accepted_comments"] == 1
+    assert succeeded
+
+
+def test_compact_facts_keep_concrete_lines_and_drop_redundant_context():
+    compact = _compact_move_facts({
+        "eval_before": 0.3,
+        "eval_after": -1.2,
+        "best": "Nf3",
+        "best_line": ["Nf3", "Nf6"],
+        "forcing_line": ["Nxd4", "exd4"],
+        "refutation": "Nxd4",
+        "runner_up": "Re1",
+        "runner_up_hanging": ["rook on e1 (pinned)"],
+        "is_sacrifice": True,
+        "king_in_check": True,
+        "phase": "middlegame",
+        "opening": "Bishop's Opening",
+    })
+
+    assert compact == {
+        "eval": [0.3, -1.2],
+        "forcing_line": ["Nxd4", "exd4"],
+        "best_line": ["Nf3", "Nf6"],
+        "runner_up": "Re1",
+        "runner_up_hanging": ["rook on e1 (pinned)"],
+        "sacrifice": True,
+        "king_in_check": True,
+    }
+
+
+def test_quiet_game_requests_no_move_comments_even_with_critical_moment(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    routine = {
+        "turn": "White",
+        "uci": "e2e4",
+        "san": "e4",
+        "classification": "Best",
+        "cp_loss": 0,
+        "facts": {"played": "e4", "class": "Best"},
+        "prompt_str": "e4 (Best)",
+    }
+    client = _FakeClient({
+        "summary": "White kept the game balanced.",
+        "comments": {"0": "An unsolicited comment."},
+    })
+    status = {}
+
+    _, comments, succeeded = generate_coach(
+        [routine], client,
+        critical_moments=[{"ply": 0, "classification": "Best"}],
+        _cache={}, status_out=status,
+    )
+
+    assert json.loads(client.models.calls[0]["contents"].split("KEY MOVES: ", 1)[1]) == []
+    assert comments == [template_comment(routine)]
+    assert status["requested_comments"] == 0
+    assert status["generated_comments"] == 0
+    assert succeeded
 
 
 def test_batch_fails_status_when_summary_falls_back(monkeypatch):
@@ -243,6 +355,9 @@ def test_single_move_applies_the_same_citation_check(monkeypatch):
     assert accepted_client.models.calls[0]["model"] == DEFAULT_GEMINI_MODEL
     system_instruction = accepted_client.models.calls[0]["config"]["system_instruction"]
     assert "Never include move numbers" in system_instruction
+    single_prompt = accepted_client.models.calls[0]["contents"]
+    assert '"hanging":["queen on d4 (pinned)"]' in single_prompt
+    assert "engine preferred Nf3" not in single_prompt
 
 
 def test_single_move_rejects_generated_move_number(monkeypatch):
@@ -368,18 +483,20 @@ def test_summary_and_comments_accept_san_without_move_numbers(monkeypatch):
             "0": "White's Qh5 is an inaccuracy in the Bishop's Opening.",
             "1": "Black blundered with Nf6, allowing White to reply with Qxf7#.",
         },
-        "brief": {"2": "White plays Qxf7# to give check."},
     })
     status = {}
 
-    summary, _, commentary_succeeded = generate_coach(
+    summary, comments, commentary_succeeded = generate_coach(
         moves, client, _cache={}, status_out=status
     )
 
     assert summary == generated
+    assert comments[2] == template_comment(moves[2])
     assert commentary_succeeded
     assert status["summary_accepted"] is True
     assert status["fallback_used"] is False
+    assert status["requested_comments"] == 2
+    assert status["accepted_comments"] == 2
     assert client.models.calls[0]["model"] == "gemini-3.5-flash-lite"
 
 
@@ -447,15 +564,18 @@ def test_batch_prompt_requires_a_turning_point_narrative(monkeypatch):
     generate_coach(_scholars_mate_moves(), client, _cache={})
 
     prompt = client.models.calls[0]["contents"]
+    summary_context = json.loads(
+        prompt.split("SUMMARY FACTS: ", 1)[1].split("\nKEY MOVES: ", 1)[0]
+    )
+    key_moves = json.loads(prompt.split("KEY MOVES: ", 1)[1])
     assert client.models.calls[0]["model"] == DEFAULT_GEMINI_MODEL
-    assert '"turn": "White"' in prompt
-    assert '"turn": "Black"' in prompt
-    assert '"Inaccuracy": 1' in prompt
-    assert '"Blunder": 1' in prompt
-    assert '"checkmate_by": "White"' in prompt
-    assert '"turning_points"' in prompt
-    assert '"san": "Nf6"' in prompt
-    assert '"san": "Qxf7#"' in prompt
+    assert {move["turn"] for move in key_moves} == {"White", "Black"}
+    assert summary_context["classification_counts"]["White"]["Inaccuracy"] == 1
+    assert summary_context["classification_counts"]["Black"]["Blunder"] == 1
+    assert summary_context["checkmate_by"] == "White"
+    assert summary_context["turning_points"]
+    assert key_moves[1]["san"] == "Nf6"
+    assert summary_context["checkmate_move"]["san"] == "Qxf7#"
     assert '"move_number"' not in prompt
     assert "without a move number" in prompt
     assert "Do not enumerate classification totals" in prompt

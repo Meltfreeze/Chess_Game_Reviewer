@@ -212,13 +212,41 @@ def _summary_context(move_data):
     }
 
 
+def _compact_move_facts(facts):
+    """Send only relevant verified facts; validation keeps the full move data."""
+    compact = {}
+    before = facts.get("eval_before")
+    after = facts.get("eval_after")
+    if before is not None and after is not None:
+        compact["eval"] = [before, after]
+
+    for key in ("hanging", "forcing_line", "missed_capture", "best_line",
+                "runner_up", "runner_up_hanging", "refutation", "material_lost"):
+        value = facts.get(key)
+        if value:
+            compact[key] = value
+
+    if facts.get("best") and not facts.get("best_line"):
+        compact["best"] = facts["best"]
+    if (compact.get("forcing_line") and compact.get("refutation")
+            == compact["forcing_line"][0]):
+        del compact["refutation"]
+    if facts.get("is_sacrifice"):
+        compact["sacrifice"] = True
+    if facts.get("is_check"):
+        compact["gives_check"] = True
+    if facts.get("king_in_check"):
+        compact["king_in_check"] = True
+    return compact
+
+
 def _move_prompt_payload(move, index):
     return {
         "id": index,
         "turn": move.get("turn"),
         "san": move.get("san") or move.get("facts", {}).get("played"),
         "classification": move.get("classification"),
-        "facts": move.get("prompt_str", ""),
+        "facts": _compact_move_facts(move.get("facts") or {}),
     }
 
 
@@ -410,34 +438,12 @@ def _validate_comment(comment, move):
     return _has_verified_citation(comment, move)
 
 
-def _select_notable(move_data, critical_moments=None, cap=24):
+def _select_notable(move_data, cap=24):
     idxs = [i for i, m in enumerate(move_data) if m["classification"] in NOTABLE]
-    if critical_moments:
-        for cm in critical_moments:
-            ply = cm.get("ply", -1)
-            if 0 <= ply < len(move_data) and ply not in idxs:
-                idxs.append(ply)
-    if move_data:
-        worst = max(range(len(move_data)), key=lambda i: move_data[i]["cp_loss"])
-        if worst not in idxs:
-            idxs.append(worst)
-    idxs = sorted(set(idxs))
     if len(idxs) > cap:
         idxs = sorted(idxs, key=lambda i: -move_data[i]["cp_loss"])[:cap]
         idxs = sorted(idxs)
     return idxs
-
-
-def _select_brief(move_data, notable_idxs):
-    """Routine moves that still get a short Gemini line."""
-    notable_set = set(notable_idxs)
-    brief = []
-    for i, m in enumerate(move_data):
-        if i in notable_set:
-            continue
-        if m["classification"] in ("Best", "Excellent", "Good", "Book"):
-            brief.append(i)
-    return brief[:20]
 
 
 def generate_coach(move_data, gemini_client, critical_moments=None,
@@ -456,8 +462,7 @@ def generate_coach(move_data, gemini_client, critical_moments=None,
         return cached
 
     comments = [template_comment(m) for m in move_data]
-    notable = _select_notable(move_data, critical_moments)
-    brief = _select_brief(move_data, notable)
+    notable = _select_notable(move_data)
     summary = _fallback_summary(move_data)
 
     if gemini_client is None:
@@ -466,7 +471,7 @@ def generate_coach(move_data, gemini_client, critical_moments=None,
             "generation_complete": False,
             "summary_generated": False,
             "summary_accepted": False,
-            "requested_comments": len(notable) + len(brief),
+            "requested_comments": len(notable),
             "generated_comments": 0,
             "accepted_comments": 0,
             "fallback_used": True,
@@ -478,16 +483,13 @@ def generate_coach(move_data, gemini_client, critical_moments=None,
 
     summary_context = _summary_context(move_data)
     payload_notable = [_move_prompt_payload(move_data[i], i) for i in notable]
-    payload_brief = [_move_prompt_payload(move_data[i], i) for i in brief]
 
     prompt = (
         "Review White and Black equally. Return JSON with:\n"
         '{"summary": "<1-2 sentence game overview>", '
-        '"comments": {"<move_id>": "<friendly comment, 1-2 sentences>"}, '
-        '"brief": {"<move_id>": "<short one-liner>"}}\n'
-        f"Use comments for key moves ({len(payload_notable)} moves) and brief for "
-        f"routine moves ({len(payload_brief)} moves). Key moves need a brief why; "
-        f"routine moves need one line. Use ONLY provided facts. Every move names "
+        '"comments": {"<move_id>": "<friendly comment, 1-2 sentences>"}}\n'
+        f"Write comments for the {len(payload_notable)} key moves. "
+        f"Each needs a brief why. Use ONLY provided facts. Every move names "
         f"the side that played it. The summary must tell the game's story in "
         f"chronological terms: name the decisive move by its exact SAN without a "
         f"move number, explain its verified consequence, and connect it to the "
@@ -496,9 +498,8 @@ def generate_coach(move_data, gemini_client, critical_moments=None,
         f"classification totals or write a report-card inventory of Book, Best, "
         f"Good, or other labels. Classification counts are supplied only to "
         f"validate factual side attribution, not as summary content.\n\n"
-        f"SUMMARY FACTS: {json.dumps(summary_context)}\n"
-        f"KEY MOVES: {json.dumps(payload_notable)}\n"
-        f"ROUTINE MOVES: {json.dumps(payload_brief)}"
+        f"SUMMARY FACTS: {json.dumps(summary_context, separators=(',', ':'))}\n"
+        f"KEY MOVES: {json.dumps(payload_notable, separators=(',', ':'))}"
     )
 
     commentary_succeeded = False
@@ -526,7 +527,7 @@ def generate_coach(move_data, gemini_client, critical_moments=None,
         if summary_succeeded:
             summary = generated_summary
 
-        requested = set(notable) | set(brief)
+        requested = set(notable)
 
         def apply_comments(candidates):
             if not isinstance(candidates, dict):
@@ -536,8 +537,9 @@ def generate_coach(move_data, gemini_client, critical_moments=None,
                     idx = int(raw_idx)
                     if not 0 <= idx < len(move_data):
                         continue
-                    if idx in requested:
-                        generated.add(idx)
+                    if idx not in requested:
+                        continue
+                    generated.add(idx)
                     if _validate_comment(candidate, move_data[idx]):
                         comments[idx] = candidate
                         accepted.add(idx)
@@ -547,14 +549,13 @@ def generate_coach(move_data, gemini_client, critical_moments=None,
                     continue
 
         apply_comments(data.get("comments", {}))
-        apply_comments(data.get("brief", {}))
         commentary_succeeded = summary_succeeded and requested.issubset(accepted)
     except Exception:
         # The deterministic comments above are the safe default. A failed API
         # call or malformed response must degrade to them, not break review.
         logger.exception("Gemini game commentary generation failed")
 
-    requested = set(notable) | set(brief)
+    requested = set(notable)
     status = {
         "gemini_attempted": gemini_attempted,
         "generation_complete": summary_generated and requested.issubset(generated),
@@ -599,8 +600,7 @@ def generate_move_comment(move, gemini_client, model=DEFAULT_GEMINI_MODEL, _cach
     if gemini_client is not None:
         prompt = (
             'Return JSON with: {"comment": "<friendly comment>"}\n'
-            f'Classification: {move["classification"]}\n'
-            f'Facts: {move["prompt_str"]}'
+            f'Move: {json.dumps(_move_prompt_payload(move, 0), separators=(",", ":"))}'
         )
         try:
             from google import genai
