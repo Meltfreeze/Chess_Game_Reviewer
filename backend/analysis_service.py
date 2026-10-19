@@ -10,6 +10,11 @@ from backend.config import (
     DEFAULT_DEPTH,
     MAX_DEPTH,
     ENGINE_LOCK_TIMEOUT_SECONDS,
+    ENGINE_THREADS,
+    ENGINE_HASH_MB,
+    FAST_ANALYSIS_DEPTH,
+    FAST_ANALYSIS_TIME_SECONDS,
+    ENGINE_TIME_LIMIT_SECONDS,
 )
 
 
@@ -38,7 +43,7 @@ class AnalysisService:
         if self._engine is None:
             self._engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
             try:
-                self._engine.configure({"Threads": 1, "Hash": 32})
+                self._engine.configure({"Threads": ENGINE_THREADS, "Hash": ENGINE_HASH_MB})
             except chess.engine.EngineError:
                 pass
         return self._engine
@@ -61,6 +66,8 @@ class AnalysisService:
         h = hashlib.sha1()
         h.update(pgn.strip().encode())
         h.update(str(depth).encode())
+        h.update(str((FAST_ANALYSIS_DEPTH, FAST_ANALYSIS_TIME_SECONDS,
+                      ENGINE_TIME_LIMIT_SECONDS, ENGINE_THREADS, ENGINE_HASH_MB)).encode())
         return h.hexdigest()
 
     def get_cached(self, pgn, depth):

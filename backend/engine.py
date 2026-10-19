@@ -9,7 +9,11 @@ import chess.pgn
 import chess.engine
 
 from backend.openings import lookup_opening, is_book_move
-from backend.config import ENGINE_TIME_LIMIT_SECONDS
+from backend.config import (
+    ENGINE_TIME_LIMIT_SECONDS,
+    FAST_ANALYSIS_DEPTH,
+    FAST_ANALYSIS_TIME_SECONDS,
+)
 
 VALUES = {
     chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
@@ -902,6 +906,51 @@ def _build_move_entry(board_before, board, move, prev_info, info,
     }
 
 
+def _review_limits(depth):
+    deep = chess.engine.Limit(depth=depth, time=ENGINE_TIME_LIMIT_SECONDS)
+    if depth <= FAST_ANALYSIS_DEPTH:
+        return deep, deep
+    fast = chess.engine.Limit(
+        depth=FAST_ANALYSIS_DEPTH, time=FAST_ANALYSIS_TIME_SECONDS
+    )
+    return fast, deep
+
+
+def _needs_deep_review(before, move, after, before_info, after_info,
+                       stays_in_book=False):
+    """Choose moves needing a full search from verified shallow MultiPV data."""
+    mover = before.turn
+    best_line = before_info[0].get("pv", [])
+    best_move = best_line[0] if best_line else None
+    before_cp = _score_mover_cp(before_info[0], mover)
+    after_cp = _score_mover_cp(after_info[0], mover)
+    loss = cp_to_wp(before_cp) - cp_to_wp(after_cp)
+
+    if stays_in_book and abs(after_cp) < 80:
+        return False
+    if (before.is_capture(move) or before.gives_check(move)
+            or before.is_check() or after.is_check() or move.promotion):
+        return True
+    if abs(loss) >= 0.03 or (best_move != move and loss >= 0.015):
+        return True
+    # A Great candidate needs a full-depth best/runner-up comparison. Also
+    # revisit played runner-up moves in case deeper search reverses their order.
+    if (best_move == move and before.legal_moves.count() > 1
+            and not is_trivially_obvious(move, before)):
+        return True
+    if len(before_info) > 1:
+        second_cp = _score_mover_cp(before_info[1], mover)
+        best_wp, second_wp = cp_to_wp(before_cp), cp_to_wp(second_cp)
+        if is_unique_best(best_wp, second_wp):
+            return True
+        runner_up = before_info[1].get("pv", [])
+        if runner_up and runner_up[0] == move:
+            return True
+    piece = before.piece_at(move.from_square)
+    return bool(piece and piece.piece_type in BRILLIANT_PIECES
+                and _sacrifice_candidate(before, move)["candidate"])
+
+
 def analyze_game_streaming(pgn_str, engine, depth=18):
     """Generator yielding (event_type, payload) for SSE streaming."""
     game = chess.pgn.read_game(io.StringIO(pgn_str))
@@ -920,9 +969,9 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
     }
 
     board = game.board()
-    limit = chess.engine.Limit(depth=depth, time=ENGINE_TIME_LIMIT_SECONDS)
-    prev_info = engine.analyse(board, limit, multipv=2)
-    prev_cp_white = _score_white_cp(prev_info[0])
+    fast_limit, deep_limit = _review_limits(depth)
+    prev_info = engine.analyse(board, fast_limit, multipv=2)
+    prev_is_deep = fast_limit is deep_limit
 
     move_data = []
     eval_history = [0.0]
@@ -935,66 +984,73 @@ def analyze_game_streaming(pgn_str, engine, depth=18):
 
     total_moves = sum(1 for _ in game.mainline())
 
+    def finish_move(context, final_info):
+        nonlocal ply
+        before, after, played, before_info, opening_name, history, book = context
+        mover = before.turn
+        before_cp_white = _score_white_cp(before_info[0])
+        after_cp_white = _score_white_cp(final_info[0])
+        mover_cp = after_cp_white if mover == chess.WHITE else -after_cp_white
+        previous_move, previous_was_capture = _previous_capture_context(history)
+        entry = _build_move_entry(
+            before, after, played, before_info, final_info,
+            before_cp_white, after_cp_white, book and abs(mover_cp) < 80,
+            opening_name, previous_move, previous_was_capture,
+            engine, deep_limit, ply,
+        )
+        total_cp_loss[mover] += entry["cp_loss"]
+        counted[mover] += 1
+        before_cp = before_cp_white if mover == chess.WHITE else -before_cp_white
+        win_before, win_after = _win_percent(before_cp), _win_percent(mover_cp)
+        move_accuracies[mover].append(_move_accuracy(win_before, win_after))
+        win_after_seq[mover].append(win_after)
+        eval_history.append(max(-10, min(10, after_cp_white / 100)))
+        move_data.append(entry)
+        ply += 1
+        return entry
+
+    # Hold one move until the next one is inspected: its destination may need
+    # a deeper search when it turns out to be the next move's starting square.
+    pending = None
     for game_node in game.mainline():
         move = game_node.move
-        mover = board.turn
-        previous_move, previous_move_was_capture = _previous_capture_context(board)
+        history = board.copy(stack=True)
         board_before = board.copy(stack=False)
-
         stays_in_book = is_book_move(uci_history, move.uci())
 
         board.push(move)
         uci_history.append(move.uci())
-
-        info = engine.analyse(board, limit, multipv=2)
-        curr_cp_white = _score_white_cp(info[0])
-        eval_history.append(max(-10, min(10, curr_cp_white / 100)))
-
-        if mover == chess.WHITE:
-            curr_cp = curr_cp_white
+        info = engine.analyse(board, fast_limit, multipv=2)
+        if fast_limit is not deep_limit and _needs_deep_review(
+                board_before, move, board, prev_info, info,
+                stays_in_book=stays_in_book):
+            if not prev_is_deep:
+                prev_info = engine.analyse(board_before, deep_limit, multipv=2)
+                prev_is_deep = True
+            info = engine.analyse(board, deep_limit, multipv=2)
+            info_is_deep = True
         else:
-            curr_cp = -curr_cp_white
-        is_book = stays_in_book and abs(curr_cp) < 80
+            info_is_deep = fast_limit is deep_limit
+
+        if pending is not None:
+            entry = finish_move(pending, prev_info)
+            yield "progress", {"ply": entry["ply"] + 1,
+                               "total": total_moves, "move": entry}
 
         eco, opening_name = lookup_opening(uci_history)
         if opening_name:
-            # Both fields move together. Setting ECO once while the name kept
-            # refining every ply paired a first-move code with a deep-line name.
             metadata["ECO"] = eco
             metadata["Opening"] = opening_name
 
-        entry = _build_move_entry(
-            board_before,
-            board,
-            move,
-            prev_info,
-            info,
-            prev_cp_white,
-            curr_cp_white,
-            is_book,
-            opening_name,
-            previous_move,
-            previous_move_was_capture,
-            engine,
-            limit,
-            ply,
-        )
-        cp_loss = entry["cp_loss"]
-        total_cp_loss[mover] += cp_loss
-        counted[mover] += 1
-
-        prev_cp = prev_cp_white if mover == chess.WHITE else -prev_cp_white
-        win_before, win_after = _win_percent(prev_cp), _win_percent(curr_cp)
-        move_accuracies[mover].append(_move_accuracy(win_before, win_after))
-        win_after_seq[mover].append(win_after)
-
-        move_data.append(entry)
-
-        yield "progress", {"ply": ply + 1, "total": total_moves, "move": entry}
-
+        pending = (board_before, board.copy(stack=False), move, prev_info,
+                   opening_name, history, stays_in_book)
         prev_info = info
-        prev_cp_white = curr_cp_white
-        ply += 1
+        prev_is_deep = info_is_deep
+
+    if pending is not None:
+        entry = finish_move(pending, prev_info)
+        yield "progress", {"ply": entry["ply"] + 1,
+                           "total": total_moves, "move": entry}
 
     def rating(color):
         if counted[color] == 0:
@@ -1056,14 +1112,21 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
     if move not in board_before.legal_moves:
         raise ValueError(f"{uci} is not legal in this position")
 
-    limit = chess.engine.Limit(depth=depth, time=ENGINE_TIME_LIMIT_SECONDS)
-    prev_info = engine.analyse(board_before, limit, multipv=2)
-    prev_cp_white = _score_white_cp(prev_info[0])
+    fast_limit, deep_limit = _review_limits(depth)
+    prev_info = engine.analyse(board_before, fast_limit, multipv=2)
 
     board = board_before.copy(stack=False)
     board.push(move)
 
-    info = engine.analyse(board, limit, multipv=2)
+    info = engine.analyse(board, fast_limit, multipv=2)
+    stays_in_book = (uci_history is not None
+                     and is_book_move(uci_history, move.uci()))
+    if fast_limit is not deep_limit and _needs_deep_review(
+            board_before, move, board, prev_info, info,
+            stays_in_book=stays_in_book):
+        prev_info = engine.analyse(board_before, deep_limit, multipv=2)
+        info = engine.analyse(board, deep_limit, multipv=2)
+    prev_cp_white = _score_white_cp(prev_info[0])
     curr_cp_white = _score_white_cp(info[0])
     previous_move, previous_move_was_capture = _history_capture_context(
         board_before, uci_history
@@ -1077,7 +1140,7 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
         # same move gets the same classification either way.
         mover = board_before.turn
         curr_cp = curr_cp_white if mover == chess.WHITE else -curr_cp_white
-        is_book = is_book_move(uci_history, move.uci()) and abs(curr_cp) < 80
+        is_book = stays_in_book and abs(curr_cp) < 80
         _, opening_name = lookup_opening([*uci_history, move.uci()])
 
     return _build_move_entry(
@@ -1093,7 +1156,7 @@ def analyze_move(fen, uci, engine, depth=18, ply=0, uci_history=None):
         previous_move,
         previous_move_was_capture,
         engine,
-        limit,
+        deep_limit,
         ply,
     )
 

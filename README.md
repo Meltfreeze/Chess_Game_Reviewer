@@ -31,7 +31,8 @@ Browser
 
 Backend
   -> serialize Stockfish access through AnalysisService
-  -> analyze each position with MultiPV=2
+  -> search every position quickly with MultiPV=2
+  -> deepen tactical, uncertain, and likely Great/Brilliant moves
   -> classify moves and derive verified facts in engine.py
   -> turn those facts into prose in coach.py
   -> reject unsupported or unjustified LLM comments
@@ -160,6 +161,10 @@ git lfs pull
 | `STOCKFISH_PATH` | auto-detected | Absolute path to a Stockfish executable. |
 | `ANALYSIS_DEPTH` | `16` | Default search depth; API requests accept depths from 8 through 22. |
 | `ENGINE_TIME_LIMIT_SECONDS` | `10` | Per-search Stockfish time ceiling. |
+| `FAST_ANALYSIS_DEPTH` | `10` | Depth of the first MultiPV=2 pass; requests at or below this depth use a single pass. |
+| `FAST_ANALYSIS_TIME_SECONDS` | `1.5` | Time ceiling for each fast-pass search. |
+| `ENGINE_THREADS` | `1` | Stockfish CPU threads; raise only if the backend has spare cores. |
+| `ENGINE_HASH_MB` | `32` | Stockfish hash memory in MB; raise only if the backend has spare RAM. |
 | `ENGINE_LOCK_TIMEOUT_SECONDS` | `45` | Maximum wait for the shared engine lock. |
 | `GEMINI_API_KEY` | none | Enables optional Gemini phrasing of verified coaching facts. |
 | `ALLOWED_ORIGINS` | local Vite origins | Comma-separated CORS origins; `*` allows any origin. |
@@ -168,6 +173,14 @@ git lfs pull
 
 Keep backend secrets in the backend deployment environment. Do not expose
 `AUTH_SECRET` or `GEMINI_API_KEY` through `VITE_` variables.
+
+Game review uses the requested depth for selected critical positions. The fast
+pass keeps two engine lines so Great move checks still compare the best and
+runner-up moves. A later move can trigger a deeper search of its starting
+position, so progress for a reviewed move is emitted after the following move
+has been inspected. Shallow and deep searches may produce different move
+labels; increase the fast depth if you need closer agreement with a full-depth
+review at the cost of speed.
 
 ## API
 

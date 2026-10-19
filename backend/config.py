@@ -11,6 +11,13 @@ MAX_DEPTH = 22
 # position can never hang a request (or the shared engine lock) forever.
 ENGINE_TIME_LIMIT_SECONDS = float(os.environ.get("ENGINE_TIME_LIMIT_SECONDS", "10"))
 
+# A cheap MultiPV=2 search covers every position. Selected moves are checked
+# again at the requested depth with the normal time ceiling.
+FAST_ANALYSIS_DEPTH = int(os.environ.get("FAST_ANALYSIS_DEPTH", "10"))
+FAST_ANALYSIS_TIME_SECONDS = float(os.environ.get("FAST_ANALYSIS_TIME_SECONDS", "1.5"))
+ENGINE_THREADS = int(os.environ.get("ENGINE_THREADS", "1"))
+ENGINE_HASH_MB = int(os.environ.get("ENGINE_HASH_MB", "32"))
+
 # Max time to wait to acquire the shared engine lock before failing fast
 # with a clear "busy" error instead of hanging silently.
 ENGINE_LOCK_TIMEOUT_SECONDS = float(os.environ.get("ENGINE_LOCK_TIMEOUT_SECONDS", "45"))

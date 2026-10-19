@@ -5,6 +5,7 @@ import json
 import chess
 import chess.engine
 
+from backend import engine as engine_mod
 from backend.engine import (
     _history_capture_context,
     _hanging_pieces,
@@ -159,6 +160,55 @@ class _GreatStubEngine(_StubEngine):
         ]
 
 
+class _AdaptiveEngine(_StubEngine):
+    def __init__(self):
+        super().__init__()
+        self.searches = []
+
+    def analyse(self, board, limit, multipv=2):
+        self.searches.append((board.fen(), limit.depth, multipv))
+        if board.fen() == chess.STARTING_FEN:
+            candidates = [
+                (chess.Move.from_uci("e2e4"), 20),
+                (chess.Move.from_uci("d2d4"), -150),
+            ]
+        else:
+            candidates = [
+                (move, 20 - index * 10)
+                for index, move in enumerate(list(board.legal_moves)[:multipv])
+            ]
+        return [{
+            "score": chess.engine.PovScore(chess.engine.Cp(cp), chess.WHITE),
+            "pv": self._line(board, move),
+        } for move, cp in candidates[:multipv]]
+
+
+class _GapChangesAtDepthEngine(_AdaptiveEngine):
+    def analyse(self, board, limit, multipv=2):
+        infos = super().analyse(board, limit, multipv=multipv)
+        if board.fen() == chess.STARTING_FEN and limit.depth == 16:
+            infos[1]["score"] = chess.engine.PovScore(
+                chess.engine.Cp(15), chess.WHITE
+            )
+        return infos
+
+
+class _RunnerUpBecomesBestEngine(_AdaptiveEngine):
+    def analyse(self, board, limit, multipv=2):
+        if board.fen() == chess.STARTING_FEN and limit.depth == 10:
+            self.searches.append((board.fen(), limit.depth, multipv))
+            return [
+                {
+                    "score": chess.engine.PovScore(
+                        chess.engine.Cp(cp), chess.WHITE
+                    ),
+                    "pv": self._line(board, chess.Move.from_uci(uci)),
+                }
+                for uci, cp in (("d2d4", 20), ("e2e4", 15))
+            ]
+        return super().analyse(board, limit, multipv=multipv)
+
+
 class _BrilliantStubEngine(_StubEngine):
     fen = "4k3/4p3/8/8/8/8/8/4R1K1 w - - 0 1"
 
@@ -249,6 +299,81 @@ def test_single_move_pipeline_emits_great_and_root_analysis_fields():
     assert entry["best_move"] == "e2e4"
     assert entry["best_wp"] > entry["second_best_wp"]
     assert entry["legal_move_count"] == 20
+
+
+def test_adaptive_review_deepens_great_with_multipv_two():
+    engine = _AdaptiveEngine()
+    entry = analyze_move(chess.STARTING_FEN, "e2e4", engine, depth=16)
+
+    assert entry["classification"] == "Great"
+    assert [depth for _fen, depth, _pv in engine.searches] == [10, 10, 16, 16]
+    assert {multipv for _fen, _depth, multipv in engine.searches} == {2}
+
+
+def test_deep_runner_up_can_reject_shallow_great_candidate():
+    engine = _GapChangesAtDepthEngine()
+    entry = analyze_move(chess.STARTING_FEN, "e2e4", engine, depth=16)
+
+    assert entry["classification"] == "Best"
+    assert entry["second_best_wp"] > 0.5
+    assert [depth for _fen, depth, _pv in engine.searches] == [10, 10, 16, 16]
+
+
+def test_deep_search_can_promote_shallow_runner_up_to_great():
+    engine = _RunnerUpBecomesBestEngine()
+    entry = analyze_move(chess.STARTING_FEN, "e2e4", engine, depth=16)
+
+    assert entry["classification"] == "Great"
+    assert [depth for _fen, depth, _pv in engine.searches] == [10, 10, 16, 16]
+
+
+def test_adaptive_stream_reuses_deep_position_for_adjacent_moves(monkeypatch):
+    monkeypatch.setattr(engine_mod, "is_book_move", lambda *_args: False)
+    engine = _AdaptiveEngine()
+    events = list(analyze_game_streaming("1. e4 e5", engine, depth=16))
+    complete = next(payload for event, payload in events if event == "complete")
+    moves = complete["move_data"]
+
+    assert moves[0]["classification"] == "Great"
+    assert len(moves) == 2
+    assert [payload["ply"] for event, payload in events if event == "progress"] == [1, 2]
+    assert {multipv for _fen, _depth, multipv in engine.searches} == {2}
+    assert len([search for search in engine.searches if search[1] == 16]) <= 3
+    assert moves[0]["eval_cp_white"] == 20
+    json.dumps(complete)
+
+
+def test_quiet_non_candidate_stays_on_fast_pass():
+    engine = _StubEngine()
+    events = list(analyze_game_streaming("1. e4", engine, depth=16))
+
+    assert engine.calls == 2
+    assert next(payload for event, payload in events if event == "complete")[
+        "move_data"
+    ][0]["classification"] != "Great"
+
+
+def test_tactical_capture_gets_deep_review():
+    engine = _AdaptiveEngine()
+    entry = analyze_move(
+        "4k3/8/8/8/8/8/4p3/4R1K1 w - - 0 1",
+        "e1e2",
+        engine,
+        depth=16,
+    )
+
+    assert entry["uci"] == "e1e2"
+    assert [depth for _fen, depth, _pv in engine.searches] == [10, 10, 16, 16]
+
+
+def test_book_move_uses_fast_pass_in_single_move_review():
+    engine = _AdaptiveEngine()
+    entry = analyze_move(
+        chess.STARTING_FEN, "e2e4", engine, depth=16, uci_history=[]
+    )
+
+    assert entry["classification"] == "Book"
+    assert [depth for _fen, depth, _pv in engine.searches] == [10, 10]
 
 
 def test_single_move_pipeline_reuses_main_pv_for_accepted_brilliant_sacrifice():
