@@ -247,6 +247,8 @@ def _sacrifice_candidate(position, move):
         "verified_by_forced_capture": False,
         "maximum_material_deficit": 0,
         "capture_wp": None,
+        "capture_pv": [],
+        "capture_cp": None,
         "reason": None,
     }
 
@@ -320,6 +322,9 @@ def verify_sacrifice(position, move, post_move_info, engine, limit, best_wp):
 
     if main_pv and main_pv[0] in capture_moves:
         evidence["accepted_in_main_pv"] = True
+        evidence["capture_pv"] = main_pv
+        if post_move_info[0].get("score") is not None:
+            evidence["capture_cp"] = _score_mover_cp(post_move_info[0], mover)
         evidence["maximum_material_deficit"] = _maximum_material_deficit(
             position, move, main_pv
         )
@@ -344,7 +349,9 @@ def verify_sacrifice(position, move, post_move_info, engine, limit, best_wp):
     evidence["maximum_material_deficit"] = _maximum_material_deficit(
         position, move, forced_pv
     )
-    evidence["capture_wp"] = cp_to_wp(_score_mover_cp(forced_info, mover))
+    evidence["capture_cp"] = _score_mover_cp(forced_info, mover)
+    evidence["capture_pv"] = forced_pv
+    evidence["capture_wp"] = cp_to_wp(evidence["capture_cp"])
     evidence["verified_by_forced_capture"] = True
     evidence["verified"] = (
         evidence["maximum_material_deficit"] >= BRILLIANT_MIN_SACRIFICE
@@ -626,6 +633,80 @@ def _format_hanging(hanging):
     ]
 
 
+def _capture_consequence(board_before, board_after, move, post_move_info, engine, limit,
+                         sacrifice_evidence=None):
+    """Return the verified result of recapturing the piece just moved.
+
+    A raw hanging-piece fact only says that a local material exchange looks
+    profitable. For a capture, that is not enough to coach the move: the
+    captured piece may already have won more material, or Stockfish may find a
+    tactical continuation after the recapture. Reuse the normal post-move PV
+    when it starts with a profitable recapture; otherwise make one restricted
+    search over those recaptures. Classification never depends on this helper.
+    """
+    if not board_before.is_capture(move):
+        return None
+
+    mover = board_before.turn
+    landed_piece = board_after.piece_at(move.to_square)
+    if not landed_piece or landed_piece.color != mover:
+        return None
+
+    recaptures = [
+        candidate
+        for candidate in board_after.legal_moves
+        if (board_after.is_capture(candidate)
+            and candidate.to_square == move.to_square
+            and static_exchange_eval(board_after, candidate) > 0)
+    ]
+    if not recaptures:
+        return None
+
+    forced_info = None
+    forced_cp = None
+    pv = post_move_info[0].get("pv", []) if post_move_info else []
+    sacrifice_pv = (sacrifice_evidence or {}).get("capture_pv") or []
+    if sacrifice_pv and sacrifice_pv[0] in recaptures:
+        pv = sacrifice_pv
+        forced_cp = sacrifice_evidence.get("capture_cp")
+    elif pv and pv[0] in recaptures:
+        forced_info = post_move_info[0]
+    else:
+        forced = engine.analyse(
+            board_after,
+            limit,
+            multipv=1,
+            root_moves=recaptures,
+        )
+        forced_info = forced[0] if isinstance(forced, list) else forced
+        pv = forced_info.get("pv", [])
+
+    if not pv or pv[0] not in recaptures:
+        return None
+    if forced_cp is None and forced_info is None:
+        return None
+
+    recapture = pv[0]
+    after_recapture = board_after.copy(stack=False)
+    after_recapture.push(recapture)
+    material_delta = (
+        _material_balance(after_recapture, mover)
+        - _material_balance(board_before, mover)
+    )
+
+    return {
+        "piece": f"{NAMES[landed_piece.piece_type]} on {chess.square_name(move.to_square)}",
+        "recapture": board_after.san(recapture),
+        "line": _pv_to_san(board_after, pv, max_plies=4),
+        "material_delta": material_delta,
+        "eval_after": round(
+            (forced_cp if forced_cp is not None else _score_mover_cp(forced_info, mover))
+            / 100,
+            1,
+        ),
+    }
+
+
 def _pv_to_san(board, pv, max_plies=8):
     san_line = []
     tmp = board.copy(stack=False)
@@ -674,7 +755,8 @@ def _multipv_signals(board_before, prev_info, board_after, info):
 def extract_facts(board_before, move, best_move, eval_before_cp, eval_after_cp,
                   classification, opp_reply_san=None, opening_name=None, phase=None,
                   is_sacrifice=False, best_line=None, forcing_line=None,
-                  runner_up=None, runner_up_hanging=None):
+                  runner_up=None, runner_up_hanging=None,
+                  capture_consequence=None):
     mover = board_before.turn
     san = board_before.san(move)
     best_san = board_before.san(best_move) if best_move else None
@@ -714,6 +796,8 @@ def extract_facts(board_before, move, best_move, eval_before_cp, eval_after_cp,
     hanging_raw = _hanging_pieces(after, mover)
     hanging = [item for item in hanging_raw if mistake_class or item[2] >= 3]
     facts["hanging"] = _format_hanging(hanging[:2])
+    if capture_consequence:
+        facts["capture_consequence"] = capture_consequence
 
     facts["refutation"] = None
     if classification in ("Blunder", "Mistake", "Inaccuracy") and opp_reply_san:
@@ -758,6 +842,15 @@ def extract_facts(board_before, move, best_move, eval_before_cp, eval_after_cp,
         bits.append("king exposed to check")
     if facts["hanging"]:
         bits.append("leaves hanging: " + ", ".join(facts["hanging"]))
+    if facts.get("capture_consequence"):
+        consequence = facts["capture_consequence"]
+        bits.append(
+            "recapture consequence: "
+            f"{consequence['recapture']} takes {consequence['piece']}; "
+            f"material change {consequence['material_delta']:+}; "
+            f"engine line {' '.join(consequence['line'])}; "
+            f"mover eval after recapture {consequence['eval_after']:+}"
+        )
     if facts["refutation"]:
         bits.append(f'opponent can reply {facts["refutation"]}')
     if facts.get("forcing_line"):
@@ -873,11 +966,23 @@ def _build_move_entry(board_before, board, move, prev_info, info,
     )
 
     cp_loss = min(1000, max(0, prev_cp - curr_cp))
+    capture_consequence = None
+    if classification in NOTABLE:
+        capture_consequence = _capture_consequence(
+            board_before,
+            board,
+            move,
+            info,
+            engine,
+            limit,
+            sacrifice_evidence=sacrifice_evidence,
+        )
     facts, prompt_str = extract_facts(
         board_before, move, best_move, prev_cp, curr_cp,
         classification, opp_reply_san, opening_name, phase,
         is_sacrifice=sacrifice_evidence["verified"],
         best_line=best_line,
+        capture_consequence=capture_consequence,
         **multipv_signals)
 
     return {
