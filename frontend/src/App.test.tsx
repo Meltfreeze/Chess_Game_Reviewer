@@ -147,6 +147,24 @@ describe("App board orientation", () => {
     await waitFor(() => expect(screen.getByTestId("review-board")).toHaveAttribute("data-flipped", "false"));
   });
 
+  it("submits only one analysis while a review is already in flight", async () => {
+    let finishRun: (result: AnalysisResult) => void = () => {};
+    vi.mocked(analyzeGame).mockReturnValue(new Promise<AnalysisResult>((resolve) => {
+      finishRun = resolve;
+    }));
+
+    render(<App />);
+    const analyze = screen.getByRole("button", { name: "Analyze fixture" });
+    fireEvent.click(analyze);
+    fireEvent.click(analyze);
+
+    expect(analyzeGame).toHaveBeenCalledTimes(1);
+    finishRun(RESULT);
+    await waitFor(() => {
+      expect(screen.getByTestId("analysis-completion")).toHaveTextContent("ai");
+    });
+  });
+
   it("classifies a timeout for the preview slot and clears it on retry", async () => {
     let finishSecondRun: (result: AnalysisResult) => void = () => {};
     const secondRun = new Promise<AnalysisResult>((resolve) => {

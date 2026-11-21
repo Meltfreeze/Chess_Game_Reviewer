@@ -71,6 +71,7 @@ export default function App() {
   // password modal opens; a successful unlock replays it.
   const [authOpen, setAuthOpen] = useState(false);
   const pendingAnalyze = useRef<{ pgn: string; depth: number } | null>(null);
+  const analysisInFlight = useRef(false);
 
   useEffect(() => {
     setBoardSize(computeBoardSize());
@@ -119,6 +120,8 @@ export default function App() {
   };
 
   const runAnalyze = async (pgn: string, depth: number) => {
+    if (analysisInFlight.current) return;
+    analysisInFlight.current = true;
     setLoading(true);
     setAnalysisFailure(null);
     setAnalysisCompletion(null);
@@ -149,6 +152,7 @@ export default function App() {
         setAnalysisFailure({ kind: analysisFailureKind(err), pgn, depth });
       }
     } finally {
+      analysisInFlight.current = false;
       setLoading(false);
     }
   };

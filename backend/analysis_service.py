@@ -95,15 +95,23 @@ class AnalysisService:
                 "Engine is busy analyzing another request. Please try again shortly."
             )
         try:
+            # A matching request may have finished while this one waited for
+            # the shared Stockfish process. Recheck under the lock so the same
+            # game is not analyzed twice.
+            cached = self.get_cached(pgn, depth)
+            if cached:
+                yield "cached", cached
+                return
+
             for event_type, payload in analyze_game_streaming(pgn, engine, depth):
                 if event_type == "complete":
                     complete_payload = payload
                 yield event_type, payload
+            if complete_payload:
+                # Publish before releasing the lock so the next waiter sees it.
+                self.set_cached(pgn, depth, complete_payload)
         finally:
             self._lock.release()
-
-        if complete_payload:
-            self.set_cached(pgn, depth, complete_payload)
 
     def analyse_position(self, fen, depth=None, multipv=3):
         from backend.engine import analyse_fen

@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Chess Game Review API", lifespan=lifespan)
 
-_origins_env = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+_origins_env = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 _allow_origins = ["*"] if _origins_env.strip() == "*" else [o.strip() for o in _origins_env.split(",") if o.strip()]
 
 app.add_middleware(

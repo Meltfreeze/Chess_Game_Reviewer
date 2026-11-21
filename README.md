@@ -133,7 +133,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. Vite proxies `/api` to
+Open `http://localhost:3000`. Vite proxies `/api` to
 `http://127.0.0.1:8000`, so `VITE_API_BASE_URL` is not needed locally.
 
 ### Stockfish discovery
