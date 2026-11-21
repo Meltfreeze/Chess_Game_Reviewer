@@ -19,6 +19,13 @@ export interface MoveFacts {
   is_check?: boolean;
   is_castle?: boolean;
   is_sacrifice?: boolean;
+  capture_consequence?: {
+    piece: string;
+    recapture: string;
+    line: string[];
+    material_delta: number;
+    eval_after: number;
+  };
   best?: string | null;
   best_line?: string[];
   hanging?: string[];

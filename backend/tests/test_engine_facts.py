@@ -7,6 +7,7 @@ import chess.engine
 
 from backend import engine as engine_mod
 from backend.engine import (
+    _capture_consequence,
     _history_capture_context,
     _hanging_pieces,
     _multipv_signals,
@@ -89,6 +90,101 @@ def test_fact_scoping_includes_inaccuracy_reply_but_not_forcing_line():
     assert facts["refutation"] == "e5"
     assert facts["best_line"] == ["e4", "e5", "Nf3"]
     assert "forcing_line" not in facts
+
+
+class _NoRestrictedRecaptureSearch:
+    def analyse(self, *_args, **_kwargs):
+        raise AssertionError("the existing post-move PV already contains the recapture")
+
+
+class _RestrictedRecaptureSearch:
+    def __init__(self):
+        self.calls = 0
+
+    def analyse(self, _board, _limit, multipv=1, root_moves=None):
+        self.calls += 1
+        assert multipv == 1
+        assert root_moves == [chess.Move.from_uci("e8e7")]
+        return [{
+            "score": chess.engine.PovScore(chess.engine.Cp(300), chess.WHITE),
+            "pv": [root_moves[0]],
+        }]
+
+
+def test_capture_consequence_explains_favorable_and_losing_recaptures():
+    cases = [
+        (
+            "4k3/4q3/2N5/8/8/8/8/K7 w - - 0 1",
+            "c6e7",
+            300,
+            6,
+            "knight on e7",
+        ),
+        (
+            "4k3/4p3/8/8/8/8/4R3/4K3 w - - 0 1",
+            "e2e7",
+            -400,
+            -4,
+            "rook on e7",
+        ),
+    ]
+
+    for fen, uci, cp, material_delta, piece in cases:
+        before = chess.Board(fen)
+        move = chess.Move.from_uci(uci)
+        after = before.copy(stack=False)
+        after.push(move)
+        recapture = chess.Move.from_uci("e8e7")
+        info = [{
+            "score": chess.engine.PovScore(chess.engine.Cp(cp), chess.WHITE),
+            "pv": [recapture],
+        }]
+
+        consequence = _capture_consequence(
+            before,
+            after,
+            move,
+            info,
+            _NoRestrictedRecaptureSearch(),
+            chess.engine.Limit(depth=8),
+        )
+
+        assert consequence == {
+            "piece": piece,
+            "recapture": "Kxe7",
+            "line": ["Kxe7"],
+            "material_delta": material_delta,
+            "eval_after": cp / 100,
+        }
+
+
+def test_capture_consequence_restricts_search_when_the_best_pv_declines_recapture():
+    before = chess.Board("4k3/4q3/2N5/8/8/8/8/K7 w - - 0 1")
+    move = chess.Move.from_uci("c6e7")
+    after = before.copy(stack=False)
+    after.push(move)
+    non_capture = next(
+        candidate
+        for candidate in after.legal_moves
+        if candidate.to_square != move.to_square
+    )
+    engine = _RestrictedRecaptureSearch()
+
+    consequence = _capture_consequence(
+        before,
+        after,
+        move,
+        [{
+            "score": chess.engine.PovScore(chess.engine.Cp(300), chess.WHITE),
+            "pv": [non_capture],
+        }],
+        engine,
+        chess.engine.Limit(depth=8),
+    )
+
+    assert engine.calls == 1
+    assert consequence["recapture"] == "Kxe7"
+    assert consequence["material_delta"] == 6
 
 
 class _StubEngine:

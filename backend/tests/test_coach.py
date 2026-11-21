@@ -73,6 +73,79 @@ def _blunder_move():
     }
 
 
+def _capture_consequence_move(*, classification, material_delta, eval_after):
+    piece = "knight on e7" if material_delta > 0 else "rook on e7"
+    played = "Nxe7" if material_delta > 0 else "Rxe7+"
+    return {
+        "turn": "White",
+        "uci": "e2e7",
+        "fen_before": "fixture-fen",
+        "classification": classification,
+        "cp_loss": 0 if material_delta > 0 else 400,
+        "facts": {
+            "played": played,
+            "class": classification,
+            "hanging": [piece],
+            "capture_consequence": {
+                "piece": piece,
+                "recapture": "Kxe7",
+                "line": ["Kxe7"],
+                "material_delta": material_delta,
+                "eval_after": eval_after,
+            },
+        },
+        "prompt_str": (
+            f"{played} ({classification}); leaves hanging: {piece}; "
+            f"recapture consequence: Kxe7 takes {piece}; "
+            f"material change {material_delta:+}; engine line Kxe7; "
+            f"mover eval after recapture {eval_after:+}"
+        ),
+    }
+
+
+def test_fallback_explains_recapturable_capture_for_good_and_bad_moves():
+    good = _capture_consequence_move(
+        classification="Great", material_delta=6, eval_after=3.0
+    )
+    bad = _capture_consequence_move(
+        classification="Mistake", material_delta=-4, eval_after=-4.0
+    )
+
+    assert template_comment(good) == (
+        "Great find — Nxe7 wins 6 points of material even after Kxe7 takes "
+        "the knight on e7."
+    )
+    assert template_comment(bad) == (
+        "Not the best. Kxe7 takes the rook on e7, costing 4 points of material."
+    )
+
+
+def test_gemini_rejects_hollow_hanging_comment_and_accepts_verified_consequence(monkeypatch):
+    _install_fake_genai(monkeypatch)
+    good = _capture_consequence_move(
+        classification="Great", material_delta=6, eval_after=3.0
+    )
+    bad = _capture_consequence_move(
+        classification="Mistake", material_delta=-4, eval_after=-4.0
+    )
+
+    hollow = "Nxe7 is a great move, leaving the knight on e7 hanging."
+    assert generate_move_comment(good, _FakeClient({"comment": hollow}), _cache={}) == template_comment(good)
+
+    good_comment = (
+        "Nxe7 wins 6 points of material even after Kxe7 takes the knight on e7."
+    )
+    bad_comment = (
+        "Kxe7 takes the rook on e7 and costs White 4 points of material."
+    )
+    assert generate_move_comment(
+        good, _FakeClient({"comment": good_comment}), _cache={}
+    ) == good_comment
+    assert generate_move_comment(
+        bad, _FakeClient({"comment": bad_comment}), _cache={}
+    ) == bad_comment
+
+
 def _scholars_mate_moves():
     return [
         {
