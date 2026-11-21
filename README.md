@@ -159,13 +159,13 @@ backend/                 FastAPI API, Stockfish analysis, and coaching
   tools/build_openings.py Opening-data build utility
   Dockerfile             Production backend image
 
-frontend/                React, TypeScript, Vite, and Tailwind SPA
+frontend/                React, TypeScript, and Vite SPA
   src/App.tsx             Top-level review and analysis state
   src/moveTree.ts         Main-line and alternate-variation navigation
   src/pgnPreview.ts       Local PGN validation and final-position preview
   src/openingLookup.ts    Browser lookup of the longest named opening prefix
   src/api/                Authentication and typed backend clients
-  src/components/         Board, navigation, evaluation, moves, and coaching UI
+  src/components/         Styled-components UI with colocated component tests
   src/types.ts            Shared frontend response and move-fact types
   public/pieces/          Chess-piece images served by Vite/Vercel
   public/data/openings.tsv Browser copy of opening data (sync explicitly)
@@ -180,8 +180,8 @@ pieces/                  Source copy of the chess-piece artwork
 ### Prerequisites
 
 - Python 3.11 or newer
-- Node.js and npm compatible with the locked Vite 5/Vitest 2 toolchain
-  (their declared Node engine ranges include 18 and 20+; use a supported runtime)
+- Node.js 20, 22, or 24+ with npm; `frontend/package.json` enforces the range
+  required by the Vite 6/Vitest 4 toolchain
 - A Stockfish executable compatible with your operating system
 - Git LFS if you need the repository's Linux Stockfish binary
 
@@ -362,9 +362,10 @@ npm run build
 On macOS/Linux, use `.venv/bin/python -m pytest`. Backend tests cover
 authentication, classification, openings, adaptive search/facts with engine
 doubles, caching/locking, coaching validation/fallbacks, SSE serialization, and
-Dockerfile configuration assertions. Frontend tests cover preview parsing and
-opening lookup, form states, duplicate-analysis prevention, commentary status,
-and board/navigation/evaluation orientation.
+Dockerfile configuration assertions. Frontend tests cover every component plus
+preview parsing, opening lookup, form states, duplicate-analysis prevention,
+commentary status, and board/navigation/evaluation orientation. Tailwind remains
+for the app shell; component styling is colocated through styled-components.
 
 The production build runs TypeScript checking followed by Vite. No lint script,
 backend type-checker, or browser end-to-end suite is configured. Tests do not

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Nav, NavButtonElement, NavIcon } from "./styledcomponents";
 
 interface MoveNavProps {
   flipped: boolean;
@@ -24,7 +25,7 @@ export default function MoveNav({
   onLast,
 }: MoveNavProps) {
   return (
-    <div className="shrink-0 bg-panel border border-panelBorder rounded-xl p-2 flex gap-2">
+    <Nav>
       <NavButton label="Flip board" disabled={false} pressed={flipped} onClick={onFlip}>
         <path d="M7 18V7a4 4 0 0 1 4-4h5" />
         <path d="m4 9 3-3 3 3" />
@@ -45,7 +46,7 @@ export default function MoveNav({
         <path d="M6.5 5l7 7-7 7" />
         <path d="M17.5 5v14" />
       </NavButton>
-    </div>
+    </Nav>
   );
 }
 
@@ -63,26 +64,24 @@ function NavButton({
   children: ReactNode;
 }) {
   return (
-    <button
+    <NavButtonElement
       type="button"
       title={label}
       aria-label={label}
       aria-pressed={pressed}
       disabled={disabled}
       onClick={onClick}
-      className="flex-1 flex items-center justify-center py-3 rounded-lg bg-[#3d3b38] text-[#e8e8e8] transition-colors enabled:hover:bg-[#4a4844] disabled:opacity-40 disabled:cursor-not-allowed"
     >
-      <svg
+      <NavIcon
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
         strokeWidth={2.5}
         strokeLinecap="round"
         strokeLinejoin="round"
-        className="w-6 h-6"
       >
         {children}
-      </svg>
-    </button>
+      </NavIcon>
+    </NavButtonElement>
   );
 }

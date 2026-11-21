@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { authenticate, AuthError } from "../api/auth";
+import { authenticate, AuthError } from "../../api/auth";
+import {
+  Actions,
+  CancelButton,
+  Description,
+  ErrorMessage,
+  ModalForm,
+  Overlay,
+  PasswordInput,
+  SubmitButton,
+  Title,
+} from "./styledcomponents";
 
 interface PasswordModalProps {
   /** Called after a successful authentication, to resume the gated action. */
@@ -42,53 +53,46 @@ export default function PasswordModal({ onSuccess, onCancel }: PasswordModalProp
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+    <Overlay
       role="dialog"
       aria-modal="true"
       aria-labelledby="auth-title"
       onMouseDown={(e) => e.target === e.currentTarget && onCancel()}
     >
-      <form
-        onSubmit={submit}
-        className="w-full max-w-sm bg-panel border border-panelBorder rounded-xl p-5 shadow-2xl"
-      >
-        <h2 id="auth-title" className="text-lg font-bold mb-1">
+      <ModalForm onSubmit={submit}>
+        <Title id="auth-title">
           Password required
-        </h2>
-        <p className="text-sm text-gray-400 mb-4">
+        </Title>
+        <Description>
           Enter the access password to analyze a game.
-        </p>
+        </Description>
 
-        <input
+        <PasswordInput
           ref={inputRef}
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           autoComplete="current-password"
           placeholder="Password"
-          className="w-full bg-[#21201d] border border-panelBorder rounded-lg p-2.5 text-sm mb-3"
         />
 
-        {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+        {error && <ErrorMessage>{error}</ErrorMessage>}
 
-        <div className="flex justify-end gap-2">
-          <button
+        <Actions>
+          <CancelButton
             type="button"
             onClick={onCancel}
-            className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:text-white"
           >
             Cancel
-          </button>
-          <button
+          </CancelButton>
+          <SubmitButton
             type="submit"
             disabled={submitting || !password}
-            className="px-5 py-2 rounded-lg font-bold text-sm bg-green-700 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {submitting ? "Checking…" : "Unlock"}
-          </button>
-        </div>
-      </form>
-    </div>
+          </SubmitButton>
+        </Actions>
+      </ModalForm>
+    </Overlay>
   );
 }

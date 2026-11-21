@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import type { CustomPieces, Piece, Square } from "react-chessboard/dist/chessboard/types";
-import type { Classification } from "../types";
-import { iconUrl } from "../api/client";
-import { BADGE_COLORS } from "../constants";
+import type { Classification } from "../../types";
+import { iconUrl } from "../../api/client";
+import { BADGE_COLORS } from "../../constants";
+import { Badge as BadgeElement, BadgeIcon, BoardFrame, PieceImage } from "./styledcomponents";
 
 /** Piece glide, captured-piece fade and last-move highlight all run on this clock. */
 const ANIMATION_MS = 180;
@@ -74,17 +75,13 @@ function buildPieces(fading: FadingPiece | null): CustomPieces {
             // unkeyed inside its square, so React otherwise reuses the same <img>
             // and only swaps src -- leaving the capturer on the faded-out node,
             // fading in from nothing just as it lands.
-            <img
+            <PieceImage
               key={pieceKey}
               src={src}
               alt={pieceKey}
               draggable={false}
-              style={{
-                width: squareWidth,
-                height: squareWidth,
-                opacity: isFading(pieceKey, square) ? 0 : 1,
-                transition: `opacity ${ANIMATION_MS}ms ease-out`,
-              }}
+              $size={squareWidth}
+              $fading={isFading(pieceKey, square)}
             />
           ),
         ];
@@ -249,7 +246,7 @@ export default function ReviewBoard({
   const handleDragEnd = () => setSelected(null);
 
   return (
-    <div className="relative" style={{ width: boardWidth }}>
+    <BoardFrame $width={boardWidth}>
       <Chessboard
         key={epoch}
         position={fen}
@@ -273,25 +270,19 @@ export default function ReviewBoard({
         customLightSquareStyle={{ backgroundColor: "#EDD6B1" }}
       />
       {badge && badgeSquare && badgeColor && (
-        <div
+        <BadgeElement
           key={`${badgeSquare}-${badge}`}
-          className="board-badge-pop absolute z-10 pointer-events-none"
-          style={{
-            width: 28,
-            height: 28,
-            top: squareTop(badgeSquare, flipped, boardWidth) - 8,
-            left: squareLeft(badgeSquare, flipped, boardWidth) + squareSize(boardWidth) - 20,
-          }}
+          $top={squareTop(badgeSquare, flipped, boardWidth) - 8}
+          $left={squareLeft(badgeSquare, flipped, boardWidth) + squareSize(boardWidth) - 20}
         >
-          <img
+          <BadgeIcon
             src={iconUrl(badge)}
             alt={badge}
-            className="w-7 h-7 drop-shadow-md"
             title={badge}
           />
-        </div>
+        </BadgeElement>
       )}
-    </div>
+    </BoardFrame>
   );
 }
 

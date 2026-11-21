@@ -1,3 +1,5 @@
+import { Graph } from "./styledcomponents";
+
 interface EvalGraphProps {
   history: number[];
   currentPly: number;
@@ -23,10 +25,9 @@ export default function EvalGraph({ history, currentPly, onSelect }: EvalGraphPr
   const cursorX = pts[Math.min(currentPly, pts.length - 1)]?.x ?? 0;
 
   return (
-    <svg
+    <Graph
       viewBox={`0 0 ${W} ${H}`}
       preserveAspectRatio="none"
-      className="w-full h-[70px] bg-panelBorder rounded-md cursor-pointer"
       onClick={(e) => {
         if (!onSelect) return;
         const rect = e.currentTarget.getBoundingClientRect();
@@ -39,6 +40,6 @@ export default function EvalGraph({ history, currentPly, onSelect }: EvalGraphPr
       <path d={area} fill="#f5f5f0" fillOpacity="0.85" />
       <path d={path} fill="none" stroke="#9c9a97" strokeWidth="0.5" />
       <line x1={cursorX} y1="0" x2={cursorX} y2={H} stroke="#e58f2a" strokeWidth="0.6" />
-    </svg>
+    </Graph>
   );
 }

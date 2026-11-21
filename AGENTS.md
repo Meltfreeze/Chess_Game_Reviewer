@@ -86,12 +86,14 @@ repository does not establish live timeout, resource, or cold-start guarantees.
 | Opening names and Book eligibility | [backend/openings.py](backend/openings.py) | `test_openings.py` |
 | Production engine installation | [backend/Dockerfile](backend/Dockerfile) | `test_deployment.py` (text assertions, not an image build) |
 | Review state, authentication replay, variations | [frontend/src/App.tsx](frontend/src/App.tsx), [moveTree.ts](frontend/src/moveTree.ts) | `App.test.tsx`; no dedicated move-tree suite |
-| PGN input, preview, opening lookup, status | [AnalyzeForm.tsx](frontend/src/components/AnalyzeForm.tsx), [GameStatusSlot.tsx](frontend/src/components/GameStatusSlot.tsx), [pgnPreview.ts](frontend/src/pgnPreview.ts), [openingLookup.ts](frontend/src/openingLookup.ts) | `AnalyzeForm.test.tsx`, `pgnPreview.test.ts` |
-| Board, navigation, evaluation orientation | [ReviewBoard.tsx](frontend/src/components/ReviewBoard.tsx), [MoveNav.tsx](frontend/src/components/MoveNav.tsx), [EvalBar.tsx](frontend/src/components/EvalBar.tsx) | Colocated component tests |
+| PGN input, preview, opening lookup, status | [AnalyzeForm](frontend/src/components/AnalyzeForm/index.tsx), [GameStatusSlot](frontend/src/components/GameStatusSlot/index.tsx), [pgnPreview.ts](frontend/src/pgnPreview.ts), [openingLookup.ts](frontend/src/openingLookup.ts) | `AnalyzeForm/index.test.tsx`, `pgnPreview.test.ts` |
+| Board, navigation, evaluation orientation | [ReviewBoard](frontend/src/components/ReviewBoard/index.tsx), [MoveNav](frontend/src/components/MoveNav/index.tsx), [EvalBar](frontend/src/components/EvalBar/index.tsx) | Colocated component tests |
 | HTTP clients and frontend response types | [frontend/src/api/client.ts](frontend/src/api/client.ts), [auth.ts](frontend/src/api/auth.ts), [types.ts](frontend/src/types.ts) | App/component mocks; no dedicated client suite |
 
 Backend test filenames above are under `backend/tests/`; frontend tests are
-colocated with their subjects. Styling uses Tailwind plus `frontend/src/index.css`.
+colocated with their subjects. The app shell uses Tailwind and
+`frontend/src/index.css`; component styles are colocated in each component's
+`styledcomponents.ts` using styled-components.
 There is no router, global state library, database, or ORM in the current app.
 
 ## Contracts and Invariants
@@ -177,8 +179,10 @@ git diff --check
 On macOS/Linux use `.venv/bin/python -m pytest`. The frontend build runs
 `tsc -b && vite build`; tests use Vitest, jsdom, and Testing Library. There is
 no configured lint script or backend type-checker. Do not invent commands such
-as `npm run lint`. Tests use engine/client doubles and do not certify live
-Stockfish strength, Gemini access, a Docker build, or a deployed service.
+as `npm run lint`. The frontend package requires Node 20, 22, or 24+ to match
+the Vite 6/Vitest 4 toolchain. Tests use engine/client doubles and do not
+certify live Stockfish strength, Gemini access, a Docker build, or a deployed
+service.
 
 ## Verification Before Reporting Done
 

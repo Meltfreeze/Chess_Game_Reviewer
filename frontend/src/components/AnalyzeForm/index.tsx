@@ -1,9 +1,36 @@
 import { useEffect, useState, type DragEvent } from "react";
-import { fetchHealth } from "../api/client";
-import { lookupOpening } from "../openingLookup";
-import { parsePgnPreview, type PgnParseState } from "../pgnPreview";
-import type { AnalysisCompletion, AnalysisFailure, HealthInfo } from "../types";
-import GameStatusSlot, { type GameStatusState } from "./GameStatusSlot";
+import { fetchHealth } from "../../api/client";
+import { lookupOpening } from "../../openingLookup";
+import { parsePgnPreview, type PgnParseState } from "../../pgnPreview";
+import type { AnalysisCompletion, AnalysisFailure, HealthInfo } from "../../types";
+import GameStatusSlot, { type GameStatusState } from "../GameStatusSlot";
+import {
+  DepthBand,
+  DepthBands,
+  DepthCard,
+  DepthHeading,
+  DepthHint,
+  DepthLabel,
+  DepthOutput,
+  DepthSlider,
+  DropZone,
+  EngineWarning,
+  FormColumn,
+  FormContainer,
+  GeminiWarning,
+  HiddenFileInput,
+  Layout,
+  PgnInput,
+  Placeholder,
+  PlaySvg,
+  SpinnerMark,
+  SubmitButton,
+  TextareaBox,
+  Title,
+  UploadLabel,
+  UploadRow,
+  UploadSvg,
+} from "./styledcomponents";
 
 const MIN_DEPTH = 8;
 const MAX_DEPTH = 22;
@@ -135,47 +162,38 @@ export default function AnalyzeForm({
   };
 
   return (
-    <div className="mb-6 rounded-2xl border border-panelBorder bg-panel p-5 min-[760px]:p-7">
-      <h2 className="mb-5 text-xl font-bold text-[#f2f1ed]">Analyze a new game</h2>
+    <FormContainer>
+      <Title>Analyze a new game</Title>
 
-      <div className="grid gap-6 min-[760px]:grid-cols-[minmax(0,1.55fr)_minmax(280px,1fr)]">
-        <div
+      <Layout>
+        <DropZone
           data-testid="pgn-drop-zone"
           onDragEnter={() => !loading && setIsDragging(true)}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`overflow-hidden rounded-xl border border-dashed bg-[#21201d] transition-colors ${
-            isDragging
-              ? "border-accent bg-accent/5 ring-2 ring-accent/30"
-              : "border-[#4a4742]"
-          }`}
+          $dragging={isDragging}
         >
-          <div className="relative min-h-64 min-[760px]:min-h-72">
+          <TextareaBox>
             {!pgn && (
-              <pre
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-0 whitespace-pre-wrap p-6 font-mono text-sm leading-8 text-[#756d61]"
-              >
+              <Placeholder aria-hidden="true">
                 {PGN_PREVIEW}
-              </pre>
+              </Placeholder>
             )}
-            <textarea
+            <PgnInput
               aria-label="PGN"
               value={pgn}
               readOnly={loading}
               aria-disabled={loading}
               onChange={(event) => setPgn(event.target.value)}
-              className="absolute inset-0 z-10 h-full w-full resize-none bg-transparent p-6 font-mono text-sm leading-8 text-[#e8e6df] caret-accent outline-none focus:ring-2 focus:ring-inset focus:ring-accent/50 read-only:cursor-not-allowed read-only:opacity-75"
             />
-          </div>
+          </TextareaBox>
 
-          <div className="flex flex-wrap items-center gap-3 border-t border-panelBorder px-4 py-3">
-            <label className={`inline-flex items-center gap-2 rounded-lg border border-[#4a4742] px-3 py-2 text-sm font-medium text-[#bdb7ae] transition-colors focus-within:ring-2 focus-within:ring-accent/50 ${loading ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:border-accent/70 hover:text-[#eeeae3]"}`}>
-              <input
+          <UploadRow>
+            <UploadLabel $loading={loading}>
+              <HiddenFileInput
                 type="file"
                 accept=".pgn,.txt"
-                className="sr-only"
                 disabled={loading}
                 onChange={(e) => {
                   const file = e.target.files?.[0];
@@ -185,22 +203,22 @@ export default function AnalyzeForm({
               />
               <UploadIcon />
               Upload PGN file
-            </label>
-          </div>
-        </div>
+            </UploadLabel>
+          </UploadRow>
+        </DropZone>
 
-        <div className="flex min-w-0 flex-col gap-5">
-          <div className="rounded-xl border border-panelBorder bg-[#292724] p-5">
-            <div className="flex items-center justify-between gap-4">
-              <label htmlFor="analysis-depth" className="text-sm font-semibold text-[#bdb7ae]">
+        <FormColumn>
+          <DepthCard>
+            <DepthHeading>
+              <DepthLabel htmlFor="analysis-depth">
                 Analysis depth
-              </label>
-              <output htmlFor="analysis-depth" className="text-xl font-semibold text-accent">
+              </DepthLabel>
+              <DepthOutput htmlFor="analysis-depth">
                 {depth}
-              </output>
-            </div>
-            <p className="mt-1 text-sm text-[#756f67]">Higher goes deeper, but takes longer to run.</p>
-            <input
+              </DepthOutput>
+            </DepthHeading>
+            <DepthHint>Higher goes deeper, but takes longer to run.</DepthHint>
+            <DepthSlider
               id="analysis-depth"
               aria-label="Analysis depth"
               type="range"
@@ -210,50 +228,46 @@ export default function AnalyzeForm({
               value={depth}
               disabled={loading}
               onChange={(event) => setDepth(Number(event.target.value))}
-              style={{
-                background: `linear-gradient(to right, #e58f2a 0%, #e58f2a ${depthProgress}%, #56514b ${depthProgress}%, #56514b 100%)`,
-              }}
-              className="mt-7 h-1.5 w-full cursor-pointer appearance-none rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-4 focus-visible:ring-offset-[#292724] [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-[#292724] [&::-moz-range-thumb]:bg-accent [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-[#292724] [&::-webkit-slider-thumb]:bg-accent [&::-webkit-slider-thumb]:shadow-[0_0_0_2px_#e58f2a]"
+              $progress={depthProgress}
             />
-            <div className="mt-4 flex justify-between text-xs font-medium">
+            <DepthBands>
               {(["Quick", "Balanced", "Deep"] as const).map((label) => (
-                <span
+                <DepthBand
                   key={label}
-                  className={depthBand === label ? "font-semibold text-accent" : "text-[#756f67]"}
+                  $active={depthBand === label}
                 >
                   {label}
-                </span>
+                </DepthBand>
               ))}
-            </div>
-          </div>
+            </DepthBands>
+          </DepthCard>
 
           <GameStatusSlot state={statusState} />
 
           <div>
             <div title={invalidForSubmit ? "Paste a valid PGN first" : undefined}>
-              <button
+              <SubmitButton
                 type="button"
                 disabled={!canAnalyze}
                 onClick={handleAnalyze}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-6 py-3.5 font-bold text-[#1c1400] transition-colors hover:bg-[#f0a444] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-panel disabled:cursor-not-allowed disabled:bg-[#272522] disabled:text-[#756f67] disabled:hover:bg-[#272522]"
               >
                 {loading ? <Spinner /> : <PlayIcon />}
                 {loading ? "Reviewing…" : "Review Game"}
-              </button>
+              </SubmitButton>
             </div>
           </div>
-        </div>
-      </div>
+        </FormColumn>
+      </Layout>
 
       {health && !health.ready && (
-        <p className="text-red-400 text-sm mt-2">Stockfish not ready: {health.error || "binary missing"}</p>
+        <EngineWarning>Stockfish not ready: {health.error || "binary missing"}</EngineWarning>
       )}
       {health && !health.gemini_configured && (
-        <p className="text-amber-400 text-sm mt-2">
+        <GeminiWarning>
           Gemini is not configured; verified fallback coaching will be used.
-        </p>
+        </GeminiWarning>
       )}
-    </div>
+    </FormContainer>
   );
 }
 
@@ -267,21 +281,21 @@ function failureMessage(failure: AnalysisFailure) {
 
 function UploadIcon() {
   return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current" strokeWidth="2">
+    <UploadSvg aria-hidden="true" viewBox="0 0 24 24" strokeWidth="2">
       <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" strokeLinecap="round" />
-    </svg>
+    </UploadSvg>
   );
 }
 
 function PlayIcon() {
   return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+    <PlaySvg aria-hidden="true" viewBox="0 0 20 20">
       <path d="M5.75 3.9a1 1 0 0 1 1.53-.85l9 6.1a1 1 0 0 1 0 1.7l-9 6.1a1 1 0 0 1-1.53-.85V3.9Z" />
-    </svg>
+    </PlaySvg>
   );
 }
 
 function Spinner() {
-  return <span aria-hidden="true" className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />;
+  return <SpinnerMark aria-hidden="true" />;
 }

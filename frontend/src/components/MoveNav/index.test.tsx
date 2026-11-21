@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import MoveNav from "./MoveNav";
+import MoveNav from "./index";
 
 function renderNav(overrides: Partial<React.ComponentProps<typeof MoveNav>> = {}) {
   const props: React.ComponentProps<typeof MoveNav> = {

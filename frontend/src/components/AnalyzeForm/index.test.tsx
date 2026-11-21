@@ -1,9 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchHealth } from "../api/client";
-import AnalyzeForm from "./AnalyzeForm";
+import { fetchHealth } from "../../api/client";
+import AnalyzeForm from "./index";
 
-vi.mock("../api/client", () => ({
+vi.mock("../../api/client", () => ({
   fetchHealth: vi.fn(),
 }));
 
@@ -29,7 +29,7 @@ describe("AnalyzeForm depth selector", () => {
     expect(slider).toHaveAttribute("max", "22");
     expect(slider).toHaveAttribute("step", "1");
     expect(slider).toHaveValue("16");
-    expect(screen.getByText("Balanced")).toHaveClass("text-accent");
+    expect(screen.getByText("Balanced")).toHaveStyle({ color: "#e58f2a" });
   });
 
   it("does not ask for a player color", () => {
@@ -55,7 +55,7 @@ describe("AnalyzeForm depth selector", () => {
     fireEvent.change(slider, { target: { value: "19" } });
 
     expect(slider).toHaveValue("19");
-    expect(screen.getByText("Deep")).toHaveClass("text-accent");
+    expect(screen.getByText("Deep")).toHaveStyle({ color: "#e58f2a" });
 
     fireEvent.change(screen.getByRole("textbox", { name: "PGN" }), {
       target: { value: "1. e4 e5" },
@@ -83,8 +83,8 @@ describe("AnalyzeForm depth selector", () => {
     expect(await screen.findByText("PGN valid")).toBeInTheDocument();
     expect(screen.getByText("Scholar")).toBeInTheDocument();
     expect(screen.getByText("Opponent")).toBeInTheDocument();
-    expect(screen.getByText("Scholar").parentElement).toHaveClass("max-w-[35%]");
-    expect(screen.getByText("Opponent").parentElement).toHaveClass("max-w-[35%]");
+    expect(screen.getByText("Scholar").parentElement).toHaveStyle({ maxWidth: "35%" });
+    expect(screen.getByText("Opponent").parentElement).toHaveStyle({ maxWidth: "35%" });
     expect(screen.getByText("1–0")).toBeInTheDocument();
     expect(screen.getByText(/29 Aug 2026 · 4 moves · Casual Game · checkmate/)).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /checkmate/ })).toBeInTheDocument();
@@ -136,7 +136,7 @@ describe("AnalyzeForm depth selector", () => {
 
     fireEvent.change(slider, { target: { value: String(depth) } });
 
-    expect(screen.getByText(band)).toHaveClass("text-accent");
+    expect(screen.getByText(band)).toHaveStyle({ color: "#e58f2a" });
   });
 
   it("reads a PGN dropped onto the input", async () => {
@@ -148,7 +148,7 @@ describe("AnalyzeForm depth selector", () => {
     } as unknown as File;
 
     fireEvent.dragOver(dropZone, { dataTransfer: { files: [file], dropEffect: "none" } });
-    expect(dropZone).toHaveClass("border-accent");
+    expect(dropZone).toHaveStyle({ borderColor: "#e58f2a" });
 
     fireEvent.drop(dropZone, { dataTransfer: { files: [file] } });
 

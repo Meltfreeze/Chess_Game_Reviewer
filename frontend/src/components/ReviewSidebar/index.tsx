@@ -1,11 +1,20 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import type { AnalysisResult } from "../types";
-import { currentNode, type MoveTree } from "../moveTree";
-import EvalGraph from "./EvalGraph";
-import CoachPanel from "./CoachPanel";
-import MoveList from "./MoveList";
-import GameSummary, { RatingFooter } from "./GameSummary";
+import type { AnalysisResult } from "../../types";
+import { currentNode, type MoveTree } from "../../moveTree";
+import EvalGraph from "../EvalGraph";
+import CoachPanel from "../CoachPanel";
+import MoveList from "../MoveList";
+import GameSummary, { RatingFooter } from "../GameSummary";
+import {
+  Footer,
+  GraphSection,
+  ScrollArea,
+  Sidebar,
+  TabButtonElement,
+  Tabs,
+  TopSection,
+} from "./styledcomponents";
 
 type Tab = "review" | "moves";
 
@@ -29,8 +38,8 @@ export default function ReviewSidebar({
   const node = currentNode(tree);
 
   return (
-    <div className="h-full bg-panel border border-panelBorder rounded-xl flex flex-col overflow-hidden">
-      <div className="shrink-0 p-3 pb-0">
+    <Sidebar>
+      <TopSection>
         <CoachPanel
           summary={result.coach.summary}
           comment={node.comment}
@@ -39,34 +48,34 @@ export default function ReviewSidebar({
           loading={node.status === "pending"}
           error={node.status === "error" ? node.error : null}
         />
-        <div className="mt-3">
+        <GraphSection>
           <EvalGraph history={result.hist} currentPly={currentPly} onSelect={onSelectPly} />
-        </div>
-      </div>
+        </GraphSection>
+      </TopSection>
 
-      <div className="shrink-0 flex gap-1 px-3 pt-3">
+      <Tabs>
         <TabButton active={tab === "review"} onClick={() => setTab("review")}>
           Review
         </TabButton>
         <TabButton active={tab === "moves"} onClick={() => setTab("moves")}>
           Moves
         </TabButton>
-      </div>
+      </Tabs>
 
-      <div className="panel-scroll flex-1 min-h-0 overflow-y-auto px-3 py-3">
+      <ScrollArea>
         {tab === "review" ? (
           <GameSummary result={result} />
         ) : (
           <MoveList tree={tree} onSelect={onSelectNode} />
         )}
-      </div>
+      </ScrollArea>
 
       {tab === "review" && (
-        <div className="shrink-0 px-3 pb-3">
+        <Footer>
           <RatingFooter result={result} />
-        </div>
+        </Footer>
       )}
-    </div>
+    </Sidebar>
   );
 }
 
@@ -80,14 +89,12 @@ function TabButton({
   children: ReactNode;
 }) {
   return (
-    <button
+    <TabButtonElement
       type="button"
       onClick={onClick}
-      className={`px-3 py-1.5 rounded-md text-base font-semibold ${
-        active ? "bg-panelBorder text-white" : "text-[#8b8987] hover:text-[#e8e8e8]"
-      }`}
+      $active={active}
     >
       {children}
-    </button>
+    </TabButtonElement>
   );
 }

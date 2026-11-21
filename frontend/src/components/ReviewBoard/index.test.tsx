@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import type { CSSProperties } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import ReviewBoard from "./ReviewBoard";
+import ReviewBoard from "./index";
 
 interface ChessboardProps {
   boardOrientation: "white" | "black";

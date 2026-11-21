@@ -1,12 +1,28 @@
 import { Fragment } from "react";
-import { iconUrl } from "../api/client";
+import { iconUrl } from "../../api/client";
 import {
   isAncestorOf,
   mainLineIds,
   variationChildren,
   type MoveNode,
   type MoveTree,
-} from "../moveTree";
+} from "../../moveTree";
+import {
+  Ellipsis,
+  ErrorMark,
+  List,
+  MoveButton,
+  MoveCellElement,
+  MoveIcon,
+  MoveNumberCell,
+  MovesTable,
+  PendingMark,
+  VariationBlock,
+  VariationButton,
+  VariationCell,
+  VariationLine,
+  VariationNumber,
+} from "./styledcomponents";
 
 interface MoveListProps {
   tree: MoveTree;
@@ -57,29 +73,29 @@ export default function MoveList({ tree, onSelect }: MoveListProps) {
   flush();
 
   return (
-    <div className="text-base">
-      <table className="w-full border-collapse">
+    <List>
+      <MovesTable>
         <tbody>
           {rows.map((row) =>
             row.kind === "moves" ? (
               <tr key={row.key}>
-                <td className="text-[#8b8987] w-7 pr-1 align-top">{row.num}.</td>
+                <MoveNumberCell>{row.num}.</MoveNumberCell>
                 <MoveCell node={row.white} tree={tree} onSelect={onSelect} />
                 <MoveCell node={row.black} tree={tree} onSelect={onSelect} ellipsis={!row.white} />
               </tr>
             ) : (
               <tr key={row.key}>
-                <td colSpan={3} className="pb-1">
+                <VariationCell colSpan={3}>
                   {row.ids.map((id) => (
                     <Variation key={id} tree={tree} startId={id} depth={0} onSelect={onSelect} />
                   ))}
-                </td>
+                </VariationCell>
               </tr>
             )
           )}
         </tbody>
-      </table>
-    </div>
+      </MovesTable>
+    </List>
   );
 }
 
@@ -94,21 +110,19 @@ function MoveCell({
   onSelect: (nodeId: string) => void;
   ellipsis?: boolean;
 }) {
-  if (!node) return <td className="p-0.5" />;
+  if (!node) return <MoveCellElement />;
   return (
-    <td className="p-0.5">
-      <button
+    <MoveCellElement>
+      <MoveButton
         type="button"
         onClick={() => onSelect(node.id)}
-        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded w-full text-left hover:bg-[#4a4844] ${
-          node.id === tree.currentId ? "bg-[#4a4844]" : ""
-        }`}
+        $selected={node.id === tree.currentId}
       >
-        {ellipsis && <span className="text-[#8b8987]">…</span>}
+        {ellipsis && <Ellipsis>…</Ellipsis>}
         <span>{node.san}</span>
         <MoveMark node={node} />
-      </button>
-    </td>
+      </MoveButton>
+    </MoveCellElement>
   );
 }
 
@@ -139,37 +153,28 @@ function Variation({
   const active = isAncestorOf(tree, startId, tree.currentId);
 
   return (
-    <div style={{ marginLeft: depth * 10 }}>
-      <div
-        className={`flex flex-wrap items-center gap-x-1 pl-2 border-l-2 text-sm ${
-          active ? "border-accent" : "border-panelBorder"
-        }`}
-      >
+    <VariationBlock $depth={depth}>
+      <VariationLine $active={active}>
         {chain.map((node, i) => (
           <Fragment key={node.id}>
             {(node.turn === "White" || i === 0) && (
-              <span className={active ? "text-[#8b8987]" : "text-[#6b6967]"}>
+              <VariationNumber $active={active}>
                 {node.moveNumber}
                 {node.turn === "White" ? "." : "…"}
-              </span>
+              </VariationNumber>
             )}
-            <button
+            <VariationButton
               type="button"
               onClick={() => onSelect(node.id)}
-              className={`inline-flex items-center gap-1 px-1 py-0.5 rounded hover:bg-[#4a4844] ${
-                node.id === tree.currentId
-                  ? "bg-[#4a4844] text-white"
-                  : active
-                    ? "text-[#d6d4d1]"
-                    : "text-[#8b8987]"
-              }`}
+              $active={active}
+              $selected={node.id === tree.currentId}
             >
               <span>{node.san}</span>
               <MoveMark node={node} />
-            </button>
+            </VariationButton>
           </Fragment>
         ))}
-      </div>
+      </VariationLine>
       {subIds.map((subId) => (
         <Variation
           key={subId}
@@ -179,32 +184,30 @@ function Variation({
           onSelect={onSelect}
         />
       ))}
-    </div>
+    </VariationBlock>
   );
 }
 
 function MoveMark({ node }: { node: MoveNode }) {
   if (node.data) {
     return (
-      <img
+      <MoveIcon
         src={iconUrl(node.data.classification)}
         alt={node.data.classification}
-        className="w-5 h-5"
       />
     );
   }
   if (node.status === "pending") {
     return (
-      <span
+      <PendingMark
         aria-label="Reviewing"
         title="Reviewing…"
-        className="w-3.5 h-3.5 rounded-full border-2 border-[#8b8987] border-t-transparent animate-spin"
       />
     );
   }
   return (
-    <span aria-label="Review failed" title={node.error ?? "Review failed"} className="text-red-400">
+    <ErrorMark aria-label="Review failed" title={node.error ?? "Review failed"}>
       !
-    </span>
+    </ErrorMark>
   );
 }
