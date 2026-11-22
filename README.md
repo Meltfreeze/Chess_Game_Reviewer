@@ -42,7 +42,7 @@ Backend
   -> serialize Stockfish access through AnalysisService
   -> search positions with MultiPV=2 at fast or deep limits
   -> deepen uncertain and likely Great/Brilliant moves
-  -> classify moves and derive verified facts in engine.py
+  -> classify moves and derive verified facts in the engine package
   -> turn those facts into prose in coach.py
   -> validate LLM comments and the game summary
   -> use a deterministic fact-based comment when validation fails
@@ -74,7 +74,7 @@ background job queue, persistence, stream heartbeat, or resume protocol.
 
 ### Search and scoring
 
-[backend/engine.py](backend/engine.py) implements adaptive MultiPV=2 review for
+[backend/engine/](backend/engine/) implements adaptive MultiPV=2 review for
 both full games and explored moves. The fast pass normally searches at depth 10;
 selected tactical, uncertain, and Great/Brilliant candidates deepen to the
 requested depth. A sacrifice may require an additional search restricted to
@@ -148,8 +148,16 @@ Stockfish hash table is separate. There is no database or saved-review service.
 ```text
 backend/                 FastAPI API, Stockfish analysis, and coaching
   main.py                Routes, validation, authentication, and SSE streaming
-  engine.py              Evaluation, move classification, and verified facts
-  coach.py               Gemini prompting, validation, and fallback comments
+  engine/                Chess-analysis package; `__init__.py` is its public API
+    rules.py             Classification, sacrifice, and chess-rule helpers
+    scoring.py           Evaluation conversion and accuracy calculations
+    facts.py             Verified coaching facts and continuation formatting
+    review.py            Reviewed-move response assembly
+  coach/                 Gemini coaching package
+    __init__.py           Public API, Gemini calls, status, and cache behavior
+    prompts.py            Prompt construction and compact verified-fact payloads
+    validation.py         Generated summary and comment validation
+    fallbacks.py          Deterministic summary and move-comment fallbacks
   analysis_service.py    Shared engine lifecycle, locking, and result cache
   auth.py                HMAC-signed shared-secret authentication tokens
   config.py              Environment settings and Stockfish discovery

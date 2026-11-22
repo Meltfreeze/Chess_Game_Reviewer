@@ -81,11 +81,12 @@ repository does not establish live timeout, resource, or cold-start guarantees.
 | Token signing and verification | [backend/auth.py](backend/auth.py) | `test_auth.py` |
 | Engine lifecycle, locking, game cache | [backend/analysis_service.py](backend/analysis_service.py) | `test_analysis_service.py` |
 | Environment defaults and binary discovery | [backend/config.py](backend/config.py) | Service and deployment tests cover selected behavior |
-| Search, classifications, facts, accuracy | [backend/engine.py](backend/engine.py) | `test_classify.py`, `test_engine_facts.py` |
-| Gemini prompts, validation, fallback prose | [backend/coach.py](backend/coach.py) | `test_coach.py` |
+| Search orchestration and compatibility façade | [backend/engine/__init__.py](backend/engine/__init__.py) | `test_classify.py`, `test_engine_facts.py` |
+| Engine rules, scoring, facts, and move-entry assembly | [rules.py](backend/engine/rules.py), [scoring.py](backend/engine/scoring.py), [facts.py](backend/engine/facts.py), [review.py](backend/engine/review.py) | `test_classify.py`, `test_engine_facts.py` |
+| Gemini orchestration, prompts, validation, fallback prose | [backend/coach/](backend/coach/) | `test_coach.py` |
 | Opening names and Book eligibility | [backend/openings.py](backend/openings.py) | `test_openings.py` |
 | Production engine installation | [backend/Dockerfile](backend/Dockerfile) | `test_deployment.py` (text assertions, not an image build) |
-| Review state, authentication replay, variations | [frontend/src/App.tsx](frontend/src/App.tsx), [moveTree.ts](frontend/src/moveTree.ts) | `App.test.tsx`; no dedicated move-tree suite |
+| Review state, authentication replay, variations | [frontend/src/App.tsx](frontend/src/App.tsx), [moveTree.ts](frontend/src/moveTree.ts) | `App.test.tsx`, `moveTree.test.ts` |
 | PGN input, preview, opening lookup, status | [AnalyzeForm](frontend/src/components/AnalyzeForm/index.tsx), [GameStatusSlot](frontend/src/components/GameStatusSlot/index.tsx), [pgnPreview.ts](frontend/src/pgnPreview.ts), [openingLookup.ts](frontend/src/openingLookup.ts) | `AnalyzeForm/index.test.tsx`, `pgnPreview.test.ts` |
 | Board, navigation, evaluation orientation | [ReviewBoard](frontend/src/components/ReviewBoard/index.tsx), [MoveNav](frontend/src/components/MoveNav/index.tsx), [EvalBar](frontend/src/components/EvalBar/index.tsx) | Colocated component tests |
 | HTTP clients and frontend response types | [frontend/src/api/client.ts](frontend/src/api/client.ts), [auth.ts](frontend/src/api/auth.ts), [types.ts](frontend/src/types.ts) | App/component mocks; no dedicated client suite |
