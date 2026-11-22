@@ -210,7 +210,7 @@ describe("AnalyzeForm depth selector", () => {
 
   it.each([
     [true, "Status: Success"],
-    [false, "Status: Failure"],
+    [false, "Review complete — coaching fallback used"],
   ])("shows review completion and its commentary mode", async (commentarySucceeded, message) => {
     const pgn = "1. e4 e5";
     const { rerender } = render(<AnalyzeForm onAnalyze={vi.fn()} loading={false} />);

@@ -119,10 +119,11 @@ The response distinguishes engine completion from Gemini generation and validati
 - `commentary_status`: attempted/complete generation, generated/accepted summary,
   requested/generated/accepted comment counts, and whether fallback was used.
 
-The preview card's `Status: Success` uses `gemini_attempted && generation_complete`
+The preview card's `Status: Success` uses `gemini_attempted && generation_complete`;
+otherwise a completed engine review is labeled `Review complete — coaching fallback used`
 when detailed status exists, even if validation rejected some prose. With older
-responses it falls back to the success boolean. `Review complete` can therefore
-coexist with Gemini `Status: Failure`; the Stockfish review remains usable.
+responses it falls back to the success boolean. The completion label therefore
+describes the Stockfish result independently from whether Gemini output was available.
 
 ### Caching and concurrency
 

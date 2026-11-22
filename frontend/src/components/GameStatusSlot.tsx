@@ -154,8 +154,10 @@ function PreviewCard({
           ) : state.kind === "failed" ? (
             <span className="truncate text-red-300" title={state.reason}>{state.reason}</span>
           ) : state.kind === "completed" ? (
-            <span className={geminiSucceeded ? "text-green-300" : "text-red-300"}>
-              {geminiSucceeded ? "Status: Success" : "Status: Failure"}
+            <span className={geminiSucceeded ? "text-green-300" : "text-amber-300"}>
+              {geminiSucceeded
+                ? "Status: Success"
+                : "Review complete — coaching fallback used"}
             </span>
           ) : (
             <span className="truncate" title={meta.join(" · ")}>{meta.join(" · ")}</span>
