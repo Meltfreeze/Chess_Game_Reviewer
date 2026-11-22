@@ -212,4 +212,3 @@ def _select_notable(move_data, cap=24):
         idxs = sorted(idxs)
     return idxs
 
-

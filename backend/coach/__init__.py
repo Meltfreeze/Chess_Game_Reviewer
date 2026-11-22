@@ -190,4 +190,3 @@ def generate_move_comment(move, gemini_client, model=DEFAULT_GEMINI_MODEL, _cach
     _cache[key] = comment
     return comment
 
-

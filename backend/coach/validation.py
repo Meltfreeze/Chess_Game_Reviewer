@@ -264,4 +264,3 @@ def _validate_comment(comment, move):
         and _addresses_capture_consequence(comment, move["facts"])
     )
 
-
