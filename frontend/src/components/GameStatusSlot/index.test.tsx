@@ -48,13 +48,13 @@ describe("GameStatusSlot", () => {
     expect(screen.getByTestId("status-board")).toHaveAttribute("data-position", "test-fen");
   });
 
-  it("distinguishes completed Gemini success from fallback failure", () => {
+  it("distinguishes completed Gemini success from coaching fallback", () => {
     const { rerender } = render(
       <GameStatusSlot
         state={{ kind: "completed", preview, commentarySucceeded: false }}
       />
     );
-    expect(screen.getByText("Status: Failure")).toBeInTheDocument();
+    expect(screen.getByText("Review complete — coaching fallback used")).toBeInTheDocument();
 
     rerender(
       <GameStatusSlot

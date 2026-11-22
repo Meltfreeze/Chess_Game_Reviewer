@@ -194,8 +194,8 @@ export const TruncatedMeta = styled.span<{ $tone?: "error" | "success" }>`
   white-space: nowrap;
 `;
 
-export const CompletionStatus = styled.span<{ $succeeded: boolean }>`
-  color: ${({ $succeeded }) => ($succeeded ? "#86efac" : "#fca5a5")};
+export const CompletionStatus = styled.span<{ $tone: "success" | "fallback" }>`
+  color: ${({ $tone }) => ($tone === "success" ? "#86efac" : "#fcd34d")};
 `;
 
 export const PlayerName = styled.span`

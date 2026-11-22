@@ -188,8 +188,10 @@ function PreviewCard({
           ) : state.kind === "failed" ? (
             <TruncatedMeta $tone="error" title={state.reason}>{state.reason}</TruncatedMeta>
           ) : state.kind === "completed" ? (
-            <CompletionStatus $succeeded={geminiSucceeded}>
-              {geminiSucceeded ? "Status: Success" : "Status: Failure"}
+            <CompletionStatus $tone={geminiSucceeded ? "success" : "fallback"}>
+              {geminiSucceeded
+                ? "Status: Success"
+                : "Review complete — coaching fallback used"}
             </CompletionStatus>
           ) : (
             <TruncatedMeta title={meta.join(" · ")}>{meta.join(" · ")}</TruncatedMeta>
